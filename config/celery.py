@@ -19,8 +19,9 @@ CRAWL_MINUTE = int(os.environ.get("CRAWL_MINUTE", 0))
 # django-celery-beat is installed, so these entries are written to the database
 # on first start and can then be edited in the admin without a redeploy.
 app.conf.beat_schedule = {
-    "nightly-brand-scraping": {
-        "task": "index.tasks.run_nightly_brand_scraping",
+    "nightly-pipeline": {
+        # Discovers new brands first, then scrapes games for all active ones.
+        "task": "index.tasks.run_nightly_pipeline",
         "schedule": crontab(hour=CRAWL_HOUR, minute=CRAWL_MINUTE),  # 02:00 UTC
         "options": {"expires": 60 * 60 * 3},
     },

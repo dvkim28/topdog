@@ -1,14 +1,23 @@
-"""Nightly scraping pipeline.
+"""Nightly pipeline: discover brands, then scrape games.
 
-    run_nightly_brand_scraping          (beat: 02:00 UTC)
-      -> chord(
-             scrape_brand.s(run_id, brand_id) for each active Brand,
-             finalise_run.s(run_id)
-         )
+    run_nightly_pipeline                (beat: 02:00 UTC)
+      -> discover_all_brands()            sync: one pass per enabled source,
+                                           per active region, updates Brand
+      -> run_nightly_brand_scraping()      -> chord(
+                                                 scrape_brand.s(run_id, brand_id)
+                                                 for each active Brand,
+                                                 finalise_run.s(run_id)
+                                             )
 
-Set SCRAPER_MODE=mock in the environment to generate plausible placements
-without touching any operator site. That is the default in DEBUG, so a fresh
-clone has a working dashboard after `seed_catalog` + `backfill_history`.
+Discovery runs first and *synchronously* within the pipeline task, so the
+brand list is settled before the game-scrape chord reads
+`Brand.objects.filter(status=ACTIVE)`. A brand discovered tonight is only
+scraped for games tonight if its region has `auto_activate_discovered_brands`
+on; otherwise it's created Paused and picked up on the next run after review.
+
+Set SCRAPER_MODE=mock in the environment to generate plausible placements and
+discoveries without touching any operator site. That is the default in DEBUG,
+so a fresh clone has a working dashboard after `seed_catalog` + `backfill_history`.
 """
 
 from __future__ import annotations
@@ -22,11 +31,16 @@ from celery.utils.log import get_task_logger
 from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
+from django.utils.text import slugify
 
 from .models import (
     Brand,
+    BrandDiscoveryLog,
+    BrandDiscoveryRun,
+    BrandDiscoverySource,
     HomepagePlacement,
     Placement,
+    Region,
     ScrapeLog,
     ScrapeRun,
     UnmatchedTile,
@@ -40,15 +54,31 @@ logger = get_task_logger(__name__)
 # --------------------------------------------------------------------------
 
 def _scrape_live(brand: Brand) -> list[dict]:
-    """Real fetch + parse. Respects robots.txt and per-host delay."""
-    from .scraping.extractor import extract_tiles
+    """Real fetch + parse. Respects robots.txt and per-host delay.
+
+    Fetches the lobby page, and the live-casino page too if the brand has a
+    separate one configured. Extraction is AI-based by default
+    (`brand.use_ai_extraction`); set it off per brand to fall back to CSS
+    selectors, e.g. while an API key isn't configured yet.
+    """
     from .scraping.fetcher import fetch_homepage
     from .scraping.matching import GameMatcher, normalize
 
-    result = fetch_homepage(brand.homepage_url)
-    tiles = extract_tiles(result.html, brand.selectors)
-    matcher = GameMatcher.from_db()
+    lobby = fetch_homepage(brand.homepage_url)
+    pages = {"lobby": lobby.html}
+    if brand.live_casino_url:
+        pages["live"] = fetch_homepage(brand.live_casino_url).html
 
+    if brand.use_ai_extraction and settings.AI["ENABLED"]:
+        from .scraping.ai_extract import extract_tiles_ai
+
+        tiles = extract_tiles_ai(pages)
+    else:
+        from .scraping.extractor import extract_tiles
+
+        tiles = extract_tiles(lobby.html, brand.selectors)
+
+    matcher = GameMatcher.from_db()
     rows, unmatched = [], []
     for tile in tiles:
         outcome = matcher.match(tile.raw_label)
@@ -173,6 +203,121 @@ def scrape_brand_sync(brand: Brand, run: ScrapeRun | None = None, day_seed: int 
 # --------------------------------------------------------------------------
 # Celery tasks
 # --------------------------------------------------------------------------
+
+# --------------------------------------------------------------------------
+# Brand discovery: find operators not yet in the Brand table
+# --------------------------------------------------------------------------
+
+def _discover_source_sync(source: BrandDiscoverySource, run: BrandDiscoveryRun, day_seed: int) -> BrandDiscoveryLog:
+    """One registry page. Never raises: a bad source is data, not an outage."""
+    from .scraping.discovery import discover_candidates
+
+    started = time.monotonic()
+    mock = getattr(settings, "SCRAPER_MODE", "mock") == "mock"
+
+    try:
+        candidates = discover_candidates(source, mock=mock, day_seed=day_seed)
+    except Exception as exc:  # noqa: BLE001 - recorded, not swallowed
+        logger.warning("Discovery failed for %s: %s", source, exc)
+        return BrandDiscoveryLog.objects.create(
+            run=run, source=source, status=BrandDiscoveryLog.Status.FAILED,
+            error_message=f"{type(exc).__name__}: {exc}"[:2000],
+            duration_ms=int((time.monotonic() - started) * 1000),
+        )
+
+    created = 0
+    default_status = (
+        Brand.Status.ACTIVE if source.region.auto_activate_discovered_brands else Brand.Status.PAUSED
+    )
+    for candidate in candidates:
+        if Brand.objects.filter(domain=candidate.domain).exists():
+            continue  # already tracked, whatever its current status
+        base_slug = slugify(candidate.name) or slugify(candidate.domain)
+        slug, n = base_slug, 1
+        while Brand.objects.filter(slug=slug).exists():
+            n += 1
+            slug = f"{base_slug}-{n}"
+        Brand.objects.create(
+            name=candidate.name,
+            slug=slug,
+            short_code=candidate.name[:6].upper(),
+            region=source.region,
+            domain=candidate.domain,
+            homepage_url=f"https://www.{candidate.domain}/",
+            licence_number=candidate.licence_number,
+            status=default_status,
+            discovered=True,
+            discovery_source=source,
+            discovered_at=timezone.now(),
+        )
+        created += 1
+
+    log = BrandDiscoveryLog.objects.create(
+        run=run, source=source, status=BrandDiscoveryLog.Status.SUCCESS,
+        candidates_found=len(candidates), brands_created=created,
+        duration_ms=int((time.monotonic() - started) * 1000),
+    )
+    if created:
+        logger.info("%s: %s new brand(s) discovered (status=%s)", source, created, default_status)
+    return log
+
+
+def discover_all_brands(trigger: str = "beat", region_code: str | None = None) -> BrandDiscoveryRun:
+    """Sync pass over every enabled source in every active region.
+
+    Called directly (not `.delay()`-ed) from `run_nightly_pipeline` so the
+    brand list is settled before the game-scrape chord reads it. Cheap enough
+    to run inline: one page fetch per source, a handful of sources per region.
+    """
+    sources = BrandDiscoverySource.objects.filter(enabled=True, region__is_active=True)
+    if region_code:
+        sources = sources.filter(region__code=region_code)
+    sources = list(sources.select_related("region"))
+    run = BrandDiscoveryRun.objects.create(trigger=trigger, sources_total=len(sources))
+    if not sources:
+        run.status = BrandDiscoveryRun.Status.SUCCESS
+        run.finished_at = timezone.now()
+        run.save()
+        return run
+
+    day_seed = timezone.localdate().toordinal()
+    ok = candidates_total = created_total = 0
+    for source in sources:
+        log = _discover_source_sync(source, run, day_seed)
+        ok += log.status == BrandDiscoveryLog.Status.SUCCESS
+        candidates_total += log.candidates_found
+        created_total += log.brands_created
+
+    run.finished_at = timezone.now()
+    run.sources_ok = ok
+    run.sources_failed = len(sources) - ok
+    run.candidates_found = candidates_total
+    run.brands_created = created_total
+    run.status = (
+        BrandDiscoveryRun.Status.SUCCESS if ok == len(sources)
+        else (BrandDiscoveryRun.Status.PARTIAL if ok else BrandDiscoveryRun.Status.FAILED)
+    )
+    run.save()
+    logger.info(
+        "Discovery run %s: %s/%s sources ok, %s new brand(s)",
+        run.pk, ok, len(sources), created_total,
+    )
+    return run
+
+
+@shared_task(name="index.tasks.discover_brands_now")
+def discover_brands_now(trigger: str = "manual") -> int:
+    """Task wrapper for the admin action / manual trigger. Runs in the worker."""
+    return discover_all_brands(trigger=trigger).pk
+
+
+@shared_task(name="index.tasks.run_nightly_pipeline")
+def run_nightly_pipeline(trigger: str = "beat") -> dict:
+    """Beat's actual entry point. Discover first, then scrape games."""
+    discovery_run = discover_all_brands(trigger=trigger)
+    scrape_run_id = run_nightly_brand_scraping(trigger=trigger)
+    return {"discovery_run_id": discovery_run.pk, "scrape_run_id": scrape_run_id}
+
 
 @shared_task(name="index.tasks.run_nightly_brand_scraping")
 def run_nightly_brand_scraping(trigger: str = "beat", region_code: str | None = None) -> int:

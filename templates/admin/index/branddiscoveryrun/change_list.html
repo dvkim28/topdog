@@ -1,0 +1,14 @@
+{% extends "admin/change_list.html" %}
+{% block object-tools-items %}
+  <li>
+    <form method="post" action="{% url 'admin:index_branddiscoveryrun_discover_now' %}" style="display:inline">
+      {% csrf_token %}
+      <button type="submit" class="button"
+              style="background:#7c6df2;color:#fff;border:0;padding:8px 14px;border-radius:4px;cursor:pointer"
+              onclick="return confirm('Run brand discovery across every enabled source now?')">
+        Discover Brands Now
+      </button>
+    </form>
+  </li>
+  {{ block.super }}
+{% endblock %}

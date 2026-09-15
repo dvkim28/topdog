@@ -43,14 +43,73 @@ Or all of it at once: `docker compose -f deploy/docker-compose.yml up`.
 
 ## 1. Nightly automation
 
-`index/tasks.py` holds the pipeline. Beat fires `run_nightly_brand_scraping` at
-**02:00 UTC**, which fans out one `scrape_brand` task per active brand and
-collects them in a chord:
+`index/tasks.py` holds the pipeline. Beat fires `run_nightly_pipeline` at
+**02:00 UTC**, which runs brand discovery first, then fans out one
+`scrape_brand` task per active brand:
 
 ```
-run_nightly_brand_scraping        (beat, 02:00 UTC)
-  └─ chord(scrape_brand × N active brands) ─→ finalise_run
+run_nightly_pipeline                    (beat, 02:00 UTC)
+  ├─ discover_all_brands()                sync: one pass per enabled
+  │                                        BrandDiscoverySource, per active
+  │                                        region — creates any Brand not
+  │                                        already tracked by domain
+  └─ run_nightly_brand_scraping()          └─ chord(scrape_brand × N active
+                                                brands) ─→ finalise_run
 ```
+
+**Why discovery runs first, and synchronously.** The game-scrape chord reads
+`Brand.objects.filter(status=ACTIVE)` when it starts. If discovery ran as a
+separate, independently-scheduled task, there'd be a race: sometimes it'd
+finish before the scrape read the brand list, sometimes after. Doing it as a
+plain synchronous call inside `run_nightly_pipeline` — not `.delay()`-ed —
+guarantees ordering: the brand list is settled before anything reads it. It's
+cheap enough for this: one page fetch per source, a handful of sources total.
+
+**Activate / disable a brand.** Already modeled — `Brand.status` is
+`active` / `paused` / `delisted`. Only `active` brands are scraped for games.
+Flip it from the Brands list in admin (bulk actions: Activate, Pause,
+Delist) or on the brand's own edit page.
+
+**What discovery actually does.** Each `BrandDiscoverySource` points at a
+regulator's public operator registry. By default it reads that page with the
+**AI extractor** (`use_ai_extraction=True`) — the raw HTML goes to Claude with
+a strict "return JSON matching this schema, only from what's on the page"
+prompt, and it comes back with operator name + domain + licence number. Turn
+`use_ai_extraction` off on a source to fall back to hand-written CSS selectors
+instead (same `selectors` field as before). Either path creates a `Brand` for
+anything not already tracked by domain — logged per-source to
+`BrandDiscoveryLog`, rolled up per-run to `BrandDiscoveryRun`.
+
+**Game extraction works the same way.** `Brand.use_ai_extraction=True` (the
+default) fetches the lobby page (`homepage_url`) and, if the brand has one, a
+separate live-casino page (`live_casino_url`), and asks Claude to identify
+which games are shown and where (hero carousel / top-pick grid / live
+section). Turn it off per brand to use the CSS `selectors` fallback instead.
+
+**Why the AI never writes to the database directly.** Both extractors return
+the same plain dataclasses (`Tile`, `Candidate`) the CSS path already
+produced. AI output for games still goes through the existing fuzzy title
+matcher and lands in `HomepagePlacement` (matched) or `UnmatchedTile`
+(unmatched) exactly like a CSS-based scrape — a hallucinated title just fails
+to match and sits in the review queue, it can't invent a `Game` row on its
+own. AI output for brands still goes through the same domain-dedup check
+before a `Brand` gets created.
+
+**Setup.** Set `ANTHROPIC_API_KEY` in `.env`. With it unset, `AI["ENABLED"]`
+is `False` and any brand/source with `use_ai_extraction=True` will fail its
+scrape with a clear error in `ScrapeLog`/`BrandDiscoveryLog` rather than
+silently doing nothing — either add the key or flip `use_ai_extraction` off
+for brands you want to keep on CSS selectors.
+
+A newly discovered brand is created **Paused** by default, so nobody scrapes
+an unvetted domain for games until someone's looked at it. Set
+`Region.auto_activate_discovered_brands` if you trust a region's source
+enough to skip that review step.
+
+Manual triggers: the **Discover Brands Now** button on the Brand Discovery
+Runs admin list, the **Discover from selected sources now** action on the
+Discovery Sources list, or **Run Full Pipeline Now** on the Scrape Runs list
+(discovery + game scraping together, same as the nightly schedule).
 
 Each brand task writes `HomepagePlacement` rows plus exactly one `ScrapeLog`
 row, and updates `brand.last_checked_at`. Brand failures are recorded, never
@@ -75,6 +134,30 @@ appear nearly everywhere, tail titles drift, and about 4% of brand-days fail so
 declared `Crawl-delay`, identifies itself in the User-Agent, and requests one
 page per brand per night. If `robots.txt` is unreachable the fetch is treated as
 disallowed.
+
+**Regions tracked**
+
+| Code | Market | Regulator |
+| --- | --- | --- |
+| ES | Spain | DGOJ |
+| MX | Mexico | SEGOB |
+| IT | Italy | ADM |
+| US | United States | State gaming boards |
+| CA | Canada | Provincial (e.g. AGCO) |
+| CL | Chile | SCJ |
+| GR | Greece | HGC |
+| DK | Denmark | Spillemyndigheden |
+| SE | Sweden | Spelinspektionen |
+| RO | Romania | ONJN |
+
+US and Canada don't have one national regulator — gambling is licensed
+state/province by state/province (NJDGE, PGCB, MGCB for the US; AGCO for
+Ontario, etc.). They're seeded as single regions for now so the GEO filter has
+something to select; if you need per-state accuracy, split `Region` into
+`US-NJ`, `US-PA`, `CA-ON` and so on the same way `Brand.region` already works.
+Chile's private online licensing regime under the SCJ is newer than DGOJ's —
+worth confirming a brand's licence status directly rather than trusting the
+region label alone.
 
 ---
 
@@ -165,5 +248,3 @@ templates/index/   dashboard, partials, monitoring
   links or bonus information.
 - `Region.legal_notice_*` and `Region.help_line` render in the footer per
   market. Fill them in for every region you add.
-# topdog
-# topdog

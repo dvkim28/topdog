@@ -51,6 +51,11 @@ class Region(models.Model):
     legal_notice_es = models.TextField(blank=True)
     help_line = models.CharField(max_length=160, blank=True)
     is_active = models.BooleanField(default=True)
+    auto_activate_discovered_brands = models.BooleanField(
+        default=False,
+        help_text="If off (recommended), brands found by the discovery scraper are "
+                  "created as Paused so someone reviews selectors before they go live.",
+    )
 
     class Meta:
         ordering = ["name"]
@@ -81,17 +86,32 @@ class Brand(models.Model):
     short_code = models.CharField(max_length=6, help_text="Badge label, e.g. CODE")
     region = models.ForeignKey(Region, on_delete=models.PROTECT, related_name="brands")
     domain = models.CharField(max_length=180, unique=True)
-    homepage_url = models.URLField()
+    homepage_url = models.URLField(help_text="Main lobby page")
+    live_casino_url = models.URLField(
+        blank=True, help_text="Live casino / live dealer section, if separate from the lobby"
+    )
     operator_group = models.CharField(max_length=160, blank=True)
     licence_number = models.CharField(max_length=80, blank=True)
 
     status = models.CharField(max_length=12, choices=Status.choices, default=Status.ACTIVE)
-    # Per-brand CSS selectors, e.g.
+    use_ai_extraction = models.BooleanField(
+        default=True,
+        help_text="Use the AI extractor to read this brand's pages. Off falls back to CSS selectors below.",
+    )
+    # CSS fallback for brands where use_ai_extraction is off, e.g.
     # {"hero": ".hero-carousel .tile", "grid": "[data-section=top] .game-card"}
     selectors = models.JSONField(default=dict, blank=True)
 
     last_checked_at = models.DateTimeField(null=True, blank=True)
     consecutive_failures = models.PositiveIntegerField(default=0)
+
+    discovered = models.BooleanField(
+        default=False, help_text="Created by the discovery scraper rather than seeded by hand"
+    )
+    discovery_source = models.ForeignKey(
+        "BrandDiscoverySource", null=True, blank=True, on_delete=models.SET_NULL, related_name="brands_found"
+    )
+    discovered_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         ordering = ["region__code", "name"]
@@ -142,6 +162,82 @@ class GameAlias(models.Model):
 
     def __str__(self):
         return self.text
+
+
+class BrandDiscoverySource(models.Model):
+    """Where to look for licensed operators in a given region.
+
+    Typically the regulator's own public licence registry. Discovery runs
+    against this page every night, before game scraping, to find operators
+    that aren't in the Brand table yet.
+    """
+
+    region = models.ForeignKey(Region, on_delete=models.CASCADE, related_name="discovery_sources")
+    name = models.CharField(max_length=160, help_text="e.g. 'DGOJ public operator registry'")
+    discovery_url = models.URLField()
+    use_ai_extraction = models.BooleanField(
+        default=True,
+        help_text="Use the AI extractor to read this registry page. Off falls back to CSS selectors below.",
+    )
+    # CSS fallback for use_ai_extraction=False, e.g.
+    # {"row": "table.operators tr", "name": "td.operator-name",
+    #  "domain": "td.website a", "licence": "td.licence-no"}
+    selectors = models.JSONField(default=dict, blank=True)
+    enabled = models.BooleanField(default=True)
+    notes = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ["region__code", "name"]
+
+    def __str__(self):
+        return f"{self.name} [{self.region.code}]"
+
+
+class BrandDiscoveryRun(models.Model):
+    """One nightly sweep across all enabled discovery sources, all regions."""
+
+    class Status(models.TextChoices):
+        RUNNING = "running", "Running"
+        SUCCESS = "success", "Success"
+        PARTIAL = "partial", "Partial"
+        FAILED = "failed", "Failed"
+
+    started_at = models.DateTimeField(default=timezone.now)
+    finished_at = models.DateTimeField(null=True, blank=True)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.RUNNING)
+    trigger = models.CharField(max_length=32, default="beat")
+    sources_total = models.PositiveIntegerField(default=0)
+    sources_ok = models.PositiveIntegerField(default=0)
+    sources_failed = models.PositiveIntegerField(default=0)
+    candidates_found = models.PositiveIntegerField(default=0)
+    brands_created = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        ordering = ["-started_at"]
+
+    def __str__(self):
+        return f"Discovery {self.pk} {self.started_at:%Y-%m-%d} ({self.status})"
+
+
+class BrandDiscoveryLog(models.Model):
+    class Status(models.TextChoices):
+        SUCCESS = "success", "Success"
+        FAILED = "failed", "Failed"
+
+    run = models.ForeignKey(BrandDiscoveryRun, on_delete=models.CASCADE, related_name="logs")
+    source = models.ForeignKey(BrandDiscoverySource, on_delete=models.CASCADE, related_name="logs")
+    status = models.CharField(max_length=12, choices=Status.choices)
+    candidates_found = models.PositiveIntegerField(default=0)
+    brands_created = models.PositiveIntegerField(default=0)
+    error_message = models.TextField(blank=True, null=True)
+    duration_ms = models.PositiveIntegerField(default=0)
+    executed_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ["-executed_at"]
+
+    def __str__(self):
+        return f"{self.source} {self.status} @ {self.executed_at:%Y-%m-%d %H:%M}"
 
 
 class ScrapeRun(models.Model):

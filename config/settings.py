@@ -129,6 +129,14 @@ CRAWLER = {
     "SNAPSHOT_RETENTION_DAYS": 180,
 }
 
+AI = {
+    "API_KEY": os.environ.get("ANTHROPIC_API_KEY", ""),
+    "ENABLED": bool(os.environ.get("ANTHROPIC_API_KEY")),
+    "MODEL": os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-5"),
+    "MAX_TOKENS": int(os.environ.get("AI_MAX_TOKENS", 4096)),
+    "MAX_HTML_CHARS": int(os.environ.get("AI_MAX_HTML_CHARS", 60000)),
+}
+
 LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,
