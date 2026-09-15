@@ -1,0 +1,33 @@
+{% comment %}Expanded row: which operators featured this title inside the window.{% endcomment %}
+<div class="px-4 py-4">
+  <div class="flex flex-wrap items-center gap-x-6 gap-y-2 text-xs text-slate-400">
+    <span>Frequency score <span class="ml-1 tabular-nums font-semibold text-emerald-300">{{ row.frequency_score }}</span></span>
+    <span>Seen on <span class="tabular-nums font-semibold text-slate-200">{{ row.days_featured }}</span> of {{ window.days }} days ({{ row.consistency }}%)</span>
+    <span>Hero placements <span class="tabular-nums font-semibold text-slate-200">{{ row.hero_count }}</span></span>
+    {% if row.previous_rank %}
+      <span>Previous period rank <span class="tabular-nums font-semibold text-slate-200">#{{ row.previous_rank }}</span></span>
+    {% else %}
+      <span class="text-violet-400">Not present in the previous period</span>
+    {% endif %}
+  </div>
+
+  {% if row.note_en %}<p class="mt-3 max-w-2xl text-xs leading-relaxed text-slate-500">{{ row.note_en }}</p>{% endif %}
+
+  <p class="mt-4 mb-2 text-xs font-medium text-slate-300">Operators featuring this title ({{ row.brand_count }})</p>
+  <div class="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+    {% for brand in row.brands %}
+      <div class="flex items-center justify-between gap-3 rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2">
+        <div class="min-w-0">
+          <p class="truncate text-xs font-medium text-slate-200">{{ brand.name }}</p>
+          <p class="text-[11px] text-slate-500">{{ brand.region }}</p>
+        </div>
+        <span class="shrink-0 rounded-md px-2 py-0.5 text-[11px] font-medium ring-1 ring-inset
+          {% if brand.placement == 'hero' %}bg-amber-400/10 text-amber-300 ring-amber-400/25
+          {% elif brand.placement == 'grid' %}bg-violet-400/10 text-violet-300 ring-violet-400/25
+          {% else %}bg-emerald-400/10 text-emerald-300 ring-emerald-400/25{% endif %}">
+          {{ brand.placement_label }}
+        </span>
+      </div>
+    {% endfor %}
+  </div>
+</div>

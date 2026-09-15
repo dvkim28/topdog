@@ -1,0 +1,58 @@
+{% comment %}Hero stat cards. Swapped by GET /partial/stats/ on filter change.{% endcomment %}
+<div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+
+  <div class="rounded-xl border border-slate-800 bg-slate-900/60 p-4">
+    <p class="text-xs text-slate-400">Operators tracked</p>
+    <p class="mt-2 text-2xl font-semibold tabular-nums text-slate-50">{{ stats.brands_tracked }}</p>
+    <p class="mt-1 text-xs text-slate-500">{{ stats.brands_with_data }} returned data in period</p>
+  </div>
+
+  <div class="rounded-xl border border-slate-800 bg-slate-900/60 p-4">
+    <p class="text-xs text-slate-400">Most featured title</p>
+    {% if stats.top_game %}
+      <p class="mt-2 truncate text-xl font-semibold tracking-tight text-slate-50">{{ stats.top_game.title }}</p>
+      <p class="mt-1 text-xs text-slate-500">
+        {{ stats.top_game.provider }} · peak {{ stats.top_game.peak_brand_count }}/{{ stats.top_game.brands_total }} brands
+      </p>
+    {% else %}
+      <p class="mt-2 text-xl font-semibold text-slate-600">—</p>
+      <p class="mt-1 text-xs text-slate-500">No data in this window</p>
+    {% endif %}
+  </div>
+
+  <div class="rounded-xl border border-slate-800 bg-slate-900/60 p-4">
+    <p class="text-xs text-slate-400">Unique titles</p>
+    <p class="mt-2 text-2xl font-semibold tabular-nums text-slate-50">{{ stats.unique_titles }}</p>
+    <p class="mt-1 text-xs text-slate-500">
+      <span class="text-emerald-400">{{ stats.risers }} rising</span> ·
+      <span class="text-violet-400">{{ stats.new_entries }} new</span>
+    </p>
+  </div>
+
+  <div class="rounded-xl border border-slate-800 bg-slate-900/60 p-4">
+    <p class="text-xs text-slate-400">Avg games per homepage</p>
+    <p class="mt-2 text-2xl font-semibold tabular-nums text-slate-50">{{ stats.avg_games_per_homepage }}</p>
+    <p class="mt-1 text-xs text-slate-500">across {{ stats.scan_days }} scan day{{ stats.scan_days|pluralize }}</p>
+  </div>
+</div>
+
+{% if category_split %}
+  <div class="mt-3 rounded-xl border border-slate-800 bg-slate-900/40 p-4">
+    <p class="mb-3 text-xs text-slate-400">Category share of homepage tiles · {{ window.label }}</p>
+    <div class="flex h-2.5 w-full overflow-hidden rounded-full bg-slate-800">
+      {% for slice in category_split %}
+        <span class="h-full {% if slice.key == 'live' %}bg-emerald-400{% elif slice.key == 'slots' %}bg-violet-400{% elif slice.key == 'crash' %}bg-sky-400{% else %}bg-amber-400{% endif %}"
+              style="width: {{ slice.percent }}%" title="{{ slice.label }}: {{ slice.percent }}%"></span>
+      {% endfor %}
+    </div>
+    <div class="mt-3 flex flex-wrap gap-x-5 gap-y-1.5">
+      {% for slice in category_split %}
+        <span class="flex items-center gap-1.5 text-xs">
+          <span class="h-2 w-2 rounded-full {% if slice.key == 'live' %}bg-emerald-400{% elif slice.key == 'slots' %}bg-violet-400{% elif slice.key == 'crash' %}bg-sky-400{% else %}bg-amber-400{% endif %}"></span>
+          <span class="text-slate-400">{{ slice.label }}</span>
+          <span class="tabular-nums font-medium text-slate-200">{{ slice.percent }}%</span>
+        </span>
+      {% endfor %}
+    </div>
+  </div>
+{% endif %}
