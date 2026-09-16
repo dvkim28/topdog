@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en" class="h-full">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Register · TopDog</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="grid min-h-full place-items-center bg-slate-950 px-4 text-slate-300 antialiased">
+  <div class="w-full max-w-sm">
+    <a href="{% url 'landing' %}" class="mb-8 flex items-center justify-center gap-2.5">
+      <span class="h-7 w-7 rounded-md bg-emerald-500/15 ring-1 ring-inset ring-emerald-500/30 grid place-items-center">
+        <span class="h-2 w-2 rounded-full bg-emerald-400"></span>
+      </span>
+      <span class="text-sm font-semibold tracking-tight text-slate-100">TopDog</span>
+    </a>
+
+    <div class="rounded-xl border border-slate-800 bg-slate-900/60 p-6">
+      <h1 class="text-lg font-semibold text-slate-100">Create an account</h1>
+
+      <form method="post" class="mt-5 space-y-4">
+        {% csrf_token %}
+        {% for field in form %}
+          <div>
+            <label for="{{ field.id_for_label }}" class="mb-1 block text-xs text-slate-400">{{ field.label }}</label>
+            {{ field }}
+            {% if field.help_text %}<p class="mt-1 text-[11px] text-slate-600">{{ field.help_text }}</p>{% endif %}
+            {% for error in field.errors %}
+              <p class="mt-1 text-[11px] text-rose-400">{{ error }}</p>
+            {% endfor %}
+          </div>
+        {% endfor %}
+        <button type="submit"
+                class="w-full rounded-lg bg-emerald-500 px-4 py-2.5 text-sm font-semibold text-slate-950 hover:bg-emerald-400">
+          Register
+        </button>
+      </form>
+    </div>
+
+    <p class="mt-4 text-center text-xs text-slate-500">
+      Already have an account? <a href="{% url 'login' %}" class="text-emerald-400 hover:text-emerald-300">Log in</a>
+    </p>
+  </div>
+</body>
+</html>

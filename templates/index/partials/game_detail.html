@@ -2,6 +2,7 @@
 <div class="px-4 py-4">
   <div class="flex flex-wrap items-center gap-x-6 gap-y-2 text-xs text-slate-400">
     <span>Frequency score <span class="ml-1 tabular-nums font-semibold text-emerald-300">{{ row.frequency_score }}</span></span>
+    <span>Avg. visibility score <span class="ml-1 tabular-nums font-semibold text-violet-300">{{ row.visibility_score }}</span></span>
     <span>Seen on <span class="tabular-nums font-semibold text-slate-200">{{ row.days_featured }}</span> of {{ window.days }} days ({{ row.consistency }}%)</span>
     <span>Hero placements <span class="tabular-nums font-semibold text-slate-200">{{ row.hero_count }}</span></span>
     {% if row.previous_rank %}

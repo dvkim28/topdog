@@ -80,6 +80,14 @@ AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"},
 ]
 
+AUTHENTICATION_BACKENDS = [
+    "index.auth_backends.EmailBackend",
+    "django.contrib.auth.backends.ModelBackend",
+]
+LOGIN_URL = "login"
+LOGIN_REDIRECT_URL = "dashboard"
+LOGOUT_REDIRECT_URL = "landing"
+
 LANGUAGE_CODE = "en-us"
 LANGUAGES = [("en", "English"), ("es", "Espanol")]
 TIME_ZONE = "Europe/Madrid"
@@ -127,6 +135,16 @@ CRAWLER = {
     "RESPECT_ROBOTS": os.environ.get("CRAWLER_RESPECT_ROBOTS", "1") == "1",
     "MAX_RETRIES": 3,
     "SNAPSHOT_RETENTION_DAYS": 180,
+    # Network-sniffing scraper (index/services/scraper.py): how long to listen
+    # for a matching lobby/games JSON response before falling back to DOM.
+    "NETWORK_SNIFF_TIMEOUT": float(os.environ.get("NETWORK_SNIFF_TIMEOUT", 5)),
+    "NETWORK_URL_PATTERNS": os.environ.get(
+        "NETWORK_URL_PATTERNS", "/games,/lobby,/tiles,/api/casino,/casino/api"
+    ).split(","),
+    # Brand discovery registry pages (index/scraping/discovery.py): caps on
+    # classic "next page" pagination and lazy-load / "load more" scrolling.
+    "DISCOVERY_MAX_PAGES": int(os.environ.get("DISCOVERY_MAX_PAGES", 5)),
+    "DISCOVERY_MAX_SCROLLS": int(os.environ.get("DISCOVERY_MAX_SCROLLS", 8)),
 }
 
 AI = {
@@ -134,7 +152,10 @@ AI = {
     "ENABLED": bool(os.environ.get("ANTHROPIC_API_KEY")),
     "MODEL": os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-5"),
     "MAX_TOKENS": int(os.environ.get("AI_MAX_TOKENS", 4096)),
-    "MAX_HTML_CHARS": int(os.environ.get("AI_MAX_HTML_CHARS", 60000)),
+    # Casino lobbies are markup-heavy; 60k chars routinely cut off before the
+    # game grid on a long homepage, silently dropping tiles. 150k covers a
+    # realistic lobby end-to-end while staying well inside the model's context.
+    "MAX_HTML_CHARS": int(os.environ.get("AI_MAX_HTML_CHARS", 150000)),
 }
 
 LOGGING = {

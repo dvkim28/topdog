@@ -1,0 +1,40 @@
+{% comment %}Returned by GET /panel/ (inline) and POST /panel/brands/bulk-status/.{% endcomment %}
+<div class="max-h-[28rem] overflow-y-auto overflow-x-auto rounded-xl border border-slate-800 bg-slate-900/40">
+  <table class="w-full text-left text-xs">
+    <thead class="sticky top-0 bg-slate-900/95 text-slate-500">
+      <tr>
+        <th class="px-3 py-2"><input type="checkbox" onclick="this.closest('table').querySelectorAll('input[name=brand_ids]').forEach(c => c.checked = this.checked)"></th>
+        <th class="px-3 py-2">Brand</th>
+        <th class="px-3 py-2">GEO</th>
+        <th class="px-3 py-2">Status</th>
+        <th class="px-3 py-2">Added</th>
+        <th class="px-3 py-2">Failures</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for brand in brands %}
+      <tr class="border-t border-slate-800/70">
+        <td class="px-3 py-2"><input type="checkbox" name="brand_ids" value="{{ brand.id }}"></td>
+        <td class="px-3 py-2 text-slate-200">{{ brand.name }}</td>
+        <td class="px-3 py-2 text-slate-500">{{ brand.region.code }}</td>
+        <td class="px-3 py-2">
+          <span class="rounded-md px-2 py-0.5 text-[11px] font-medium
+            {% if brand.status == 'active' %}bg-emerald-400/10 text-emerald-300
+            {% elif brand.status == 'paused' %}bg-amber-400/10 text-amber-300
+            {% else %}bg-slate-700/40 text-slate-400{% endif %}">
+            {{ brand.get_status_display }}
+          </span>
+        </td>
+        <td class="px-3 py-2 text-slate-500">
+          {% if brand.created_at %}{{ brand.created_at|date:"d M Y H:i" }}{% else %}—{% endif %}
+        </td>
+        <td class="px-3 py-2 tabular-nums {% if brand.consecutive_failures %}text-rose-400{% else %}text-slate-500{% endif %}">
+          {{ brand.consecutive_failures }}
+        </td>
+      </tr>
+    {% empty %}
+      <tr><td colspan="6" class="px-3 py-6 text-center text-slate-500">No brands yet.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>

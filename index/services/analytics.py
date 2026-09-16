@@ -114,6 +114,7 @@ class GameRow:
     brands_total: int = 0
     hero_count: int = 0
     frequency_score: int = 0
+    visibility_score: float = 0.0
     dominant_placement: str = Placement.OTHER
     geo_codes: list[str] = field(default_factory=list)
     brands: list[dict] = field(default_factory=list)
@@ -143,9 +144,15 @@ class GameRow:
 
 
 def _base_queryset(window: Window, geo: str | None, previous: bool = False):
+    """Every product-facing aggregation (rankings, stats, category split) goes
+    through this. `game__is_active=False` is the deliberate, reversible way
+    to hide a title (see Game.is_active) - a placement whose tile is still
+    only an UnmatchedTileReview row is already excluded for free, since it
+    has no `game` FK to join against at all.
+    """
     start = window.previous_start if previous else window.start
     end = window.previous_end if previous else window.end
-    qs = HomepagePlacement.objects.filter(created_at__range=(start, end))
+    qs = HomepagePlacement.objects.filter(created_at__range=(start, end), game__is_active=True)
     if geo and geo != "all":
         qs = qs.filter(brand__region__code=geo)
     return qs
@@ -206,6 +213,7 @@ def build_rows(
             "brand__region__code",
             "placement",
             "day",
+            "position_score",
         )
     )
 
@@ -216,10 +224,12 @@ def build_rows(
     placements_by_game: dict[int, Counter] = defaultdict(Counter)
     geo_by_game: dict[int, set] = defaultdict(set)
     brand_meta: dict[int, dict] = defaultdict(dict)
+    position_score_totals: dict[int, float] = defaultdict(float)
+    tile_counts: dict[int, int] = defaultdict(int)
 
     for (
         game_id, title, slug, provider, category_value,
-        brand_id, brand_name, short_code, region_code, placement, day,
+        brand_id, brand_name, short_code, region_code, placement, day, position_score,
     ) in rows:
         if game_id not in games:
             games[game_id] = GameRow(
@@ -237,6 +247,8 @@ def build_rows(
         brands_per_day[game_id][day].add(brand_id)
         placements_by_game[game_id][placement] += 1
         geo_by_game[game_id].add(region_code)
+        position_score_totals[game_id] += position_score
+        tile_counts[game_id] += 1
         # Strongest placement seen for this brand wins the badge.
         current = brand_meta[game_id].get(brand_id)
         weight = PLACEMENT_WEIGHT[Placement(placement)]
@@ -270,6 +282,9 @@ def build_rows(
             brand_meta[game_id].values(), key=lambda b: (-b["weight"], b["name"])
         )
         row.frequency_score = _score(row, counter)
+        row.visibility_score = round(
+            position_score_totals[game_id] / max(1, tile_counts[game_id]), 2
+        )
 
     ordered = sorted(
         games.values(), key=lambda r: (-r.brand_count, -r.days_featured, -r.frequency_score)

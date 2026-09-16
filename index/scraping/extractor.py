@@ -22,6 +22,8 @@ class Tile:
     raw_label: str
     placement: str
     position: int
+    row: int | None = None
+    column: int | None = None
 
 
 def _label_from(node) -> str:

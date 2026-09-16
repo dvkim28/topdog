@@ -11,9 +11,38 @@ regulated homepages, in which market, over any period you choose.**
 
 ## Quick start
 
+**Recommended: Docker Compose.** `/panel/` and the nightly pipeline need Postgres,
+Redis *and* a running Celery worker at the same time - easy to forget one of
+those in separate terminals, and the app fails silently (queued tasks just
+sit there) rather than loudly when it's missing. Compose starts all five
+processes (db, redis, web, worker, beat) together, correctly wired to each
+other, so there's nothing to forget:
+
+```bash
+cp .env.example .env                      # set ANTHROPIC_API_KEY if you want AI extraction
+docker compose -f deploy/docker-compose.yml up --build
+```
+
+First boot only, in another terminal:
+
+```bash
+docker compose -f deploy/docker-compose.yml exec web python manage.py createsuperuser
+docker compose -f deploy/docker-compose.yml exec web python manage.py seed_catalog
+docker compose -f deploy/docker-compose.yml exec web python manage.py backfill_history --days 45
+```
+
+(`migrate` runs automatically on every `web` boot, so it's not a separate step.)
+If you already have something else on port 8000 (e.g. a `manage.py runserver`
+from the venv workflow below), stop it first or compose's `web` will fail to
+bind the port.
+
+**Alternative: plain venv**, if you'd rather not use Docker - three terminals,
+and Redis installed locally (`brew install redis` / `apt install redis-server`):
+
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
+playwright install chromium               # only needed for SCRAPER_MODE=live
 cp .env.example .env                      # SCRAPER_MODE=mock by default
 
 python manage.py migrate
@@ -21,23 +50,20 @@ python manage.py createsuperuser
 python manage.py seed_catalog             # regions, brands, providers, games
 python manage.py backfill_history --days 45   # simulated scan history
 
-python manage.py runserver
+redis-server                              # terminal 2
+celery -A config worker -l info           # terminal 3
+celery -A config beat -l info --scheduler django_celery_beat.schedulers:DatabaseScheduler  # terminal 4
+python manage.py runserver                # terminal 1
 ```
-
-Then in two more terminals:
-
-```bash
-celery -A config worker -l info
-celery -A config beat -l info --scheduler django_celery_beat.schedulers:DatabaseScheduler
-```
-
-Or all of it at once: `docker compose -f deploy/docker-compose.yml up`.
 
 | URL | What it is |
 | --- | --- |
-| `/` | Public dashboard with GEO + date-range filters |
+| `/` | Public landing page + Market Visibility Index preview |
+| `/dashboard/` | Full dashboard with GEO + date-range filters |
+| `/register/`, `/login/`, `/logout/` | Email-based account auth |
+| `/panel/` | Staff-only HTMX execution panel: bulk brand status, pipeline triggers, live log feed, unmatched-tile review queue |
 | `/monitoring/` | Run history, per-brand reliability, scrape log |
-| `/admin/index/scraperun/` | **Run All Scrapers Now** button |
+| `/admin/index/scraperun/` | **Run All Scrapers Now** button (Django admin) |
 
 ---
 
@@ -80,20 +106,41 @@ instead (same `selectors` field as before). Either path creates a `Brand` for
 anything not already tracked by domain — logged per-source to
 `BrandDiscoveryLog`, rolled up per-run to `BrandDiscoveryRun`.
 
-**Game extraction works the same way.** `Brand.use_ai_extraction=True` (the
-default) fetches the lobby page (`homepage_url`) and, if the brand has one, a
-separate live-casino page (`live_casino_url`), and asks Claude to identify
-which games are shown and where (hero carousel / top-pick grid / live
-section). Turn it off per brand to use the CSS `selectors` fallback instead.
+**Game extraction is network-sniffing first.** `index/services/scraper.py`
+opens the lobby (and live-casino, if configured) page in headless Playwright
+and listens on `page.on("response")` for the JSON payload the page's own
+lobby app loads from (URLs matching `/games`, `/lobby`, `/tiles`, ...). If a
+usable payload shows up within `NETWORK_SNIFF_TIMEOUT` seconds (default 5),
+tiles are parsed straight from that JSON — no DOM parsing at all. Only if
+nothing usable was captured in time does it fall back to DOM extraction on
+the already-rendered page: `Brand.use_ai_extraction=True` (the default) asks
+Claude to identify which games are shown and where; turned off, it uses the
+CSS `selectors` fallback instead. Every response checked against the URL
+patterns, matched or not, is logged to `NetworkCaptureLog`; which path
+actually won is recorded per-run on `ScrapeLog.extraction_mode`
+(`network_api` / `dom_ai` / `dom_css` / `mock`).
+
+**Two-tier title matching.** `index/services/normalization.py` runs
+deterministic cleanup (`index.scraping.matching.normalize`) plus a RapidFuzz
+match against `Game`/`GameAlias` first — cheap, no network call. Whatever
+that can't confidently resolve is batched into one structured Claude request
+per brand, alongside each title's nearest RapidFuzz candidates, asking it to
+pick a candidate or say `NEW_GAME`. A hallucinated or genuinely new title
+can't invent a `Game` row on its own either way — it lands in
+`UnmatchedTileReview` (with Claude's candidates attached) for a human to
+confirm from `/panel/` or Django admin.
+
+**Positional visibility scoring.** `index/services/scoring.py` scores every
+tile as it's captured — section weight (Hero 2.5× / Grid 1.8× / Live 1.0× /
+Lobby 1.0×) decayed by on-page position — and stores it on
+`HomepagePlacement.position_score`. The dashboard's per-game detail panel
+shows the period average as **visibility score**, alongside the existing
+coverage-based frequency score.
 
 **Why the AI never writes to the database directly.** Both extractors return
 the same plain dataclasses (`Tile`, `Candidate`) the CSS path already
-produced. AI output for games still goes through the existing fuzzy title
-matcher and lands in `HomepagePlacement` (matched) or `UnmatchedTile`
-(unmatched) exactly like a CSS-based scrape — a hallucinated title just fails
-to match and sits in the review queue, it can't invent a `Game` row on its
-own. AI output for brands still goes through the same domain-dedup check
-before a `Brand` gets created.
+produced, and AI output for brands still goes through the same domain-dedup
+check before a `Brand` gets created.
 
 **Setup.** Set `ANTHROPIC_API_KEY` in `.env`. With it unset, `AI["ENABLED"]`
 is `False` and any brand/source with `use_ai_extraction=True` will fail its
@@ -221,17 +268,26 @@ clean.
 ```
 config/            settings, celery app + beat schedule, urls
 index/
-  models.py        Region, Brand, Game, HomepagePlacement, ScrapeLog, ScrapeRun
+  models.py        Region, Brand, Game, HomepagePlacement, ScrapeLog, ScrapeRun,
+                    NetworkCaptureLog, UnmatchedTileReview
   tasks.py         nightly pipeline, mock + live scrapers
-  views.py         dashboard + HTMX partials + monitoring
+  views.py         landing, dashboard + HTMX partials, monitoring, register
+  panel_views.py   /panel/: bulk brand status, triggers, log feed, review queue
+  forms.py         email registration / login forms
+  auth_backends.py login-by-email backend
   admin.py         Run All Scrapers Now, review queues
   services/
-    analytics.py   window resolution, aggregation, trend comparison
-  scraping/        robots gate, fetcher, extractor, fuzzy title matcher
+    analytics.py     window resolution, aggregation, trend comparison
+    scraper.py       Playwright network sniffer + DOM fallback
+    normalization.py Tier 1 RapidFuzz + Tier 2 Claude batch title matching
+    scoring.py       positional visibility scoring (S_position)
+  scraping/        robots gate, fetcher, CSS extractor, AI extractor, normalize()
   management/commands/
     seed_catalog.py      regions, brands, games, aliases
     backfill_history.py  simulated scan history for the date filters
-templates/index/   dashboard, partials, monitoring
+templates/
+  index/           landing, dashboard, panel, partials, monitoring
+  registration/    login, register
 ```
 
 ---

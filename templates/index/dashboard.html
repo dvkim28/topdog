@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Regulated Casino Game Frequency Index</title>
+  <title>TopDog · Regulated Casino Game Visibility Index</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://unpkg.com/htmx.org@2.0.4"></script>
   <style>
@@ -16,12 +16,12 @@
 
 <header class="sticky top-0 z-20 border-b border-slate-800/80 bg-slate-950/90 backdrop-blur">
   <div class="mx-auto flex max-w-7xl items-center justify-between gap-4 px-4 py-3 sm:px-6">
-    <div class="flex items-center gap-2.5">
+    <a href="{% url 'landing' %}" class="flex items-center gap-2.5">
       <span class="h-7 w-7 rounded-md bg-emerald-500/15 ring-1 ring-inset ring-emerald-500/30 grid place-items-center">
         <span class="h-2 w-2 rounded-full bg-emerald-400"></span>
       </span>
-      <span class="text-sm font-semibold tracking-tight text-slate-100">Frequency Index</span>
-    </div>
+      <span class="text-sm font-semibold tracking-tight text-slate-100">TopDog</span>
+    </a>
     <div class="flex items-center gap-3 text-xs text-slate-500">
       {% if last_run %}
         <span>Last scan {{ last_run.started_at|date:"d M H:i" }} ·
@@ -34,6 +34,17 @@
         <span>No scan recorded yet</span>
       {% endif %}
       <a href="{% url 'monitoring' %}" class="rounded-md border border-slate-800 px-2 py-1 hover:text-slate-200">Monitoring</a>
+      {% if request.user.is_staff %}
+        <a href="{% url 'panel-home' %}" class="rounded-md border border-slate-800 px-2 py-1 hover:text-slate-200">Admin panel</a>
+      {% endif %}
+      {% if request.user.is_authenticated %}
+        <form method="post" action="{% url 'logout' %}" class="inline">
+          {% csrf_token %}
+          <button type="submit" class="rounded-md border border-slate-800 px-2 py-1 hover:text-slate-200">Log out</button>
+        </form>
+      {% else %}
+        <a href="{% url 'login' %}" class="rounded-md border border-slate-800 px-2 py-1 hover:text-slate-200">Log in</a>
+      {% endif %}
     </div>
   </div>
 </header>

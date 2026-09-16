@@ -12,14 +12,26 @@ validation code a CSS-selector extraction would.
 from __future__ import annotations
 
 import json
+import logging
 import re
 
 from django.conf import settings
 from tenacity import retry, stop_after_attempt, wait_exponential
 
+logger = logging.getLogger(__name__)
+
 _SCRIPT_STYLE = re.compile(r"<(script|style|svg|noscript)\b.*?</\1>", re.IGNORECASE | re.DOTALL)
 _COMMENTS = re.compile(r"<!--.*?-->", re.DOTALL)
 _MANY_BLANKS = re.compile(r"\n\s*\n+")
+# Responsive-image plumbing: pure image-URL bytes, no game-name signal, and
+# on a real lobby this is routinely the majority of the page's characters
+# (srcset lists 4-6 resolutions per image). Stripping these before truncating
+# is what keeps the actual game grid inside MAX_HTML_CHARS instead of being
+# pushed past the cut by a handful of hero-banner <img> tags. `alt`/`title`/
+# `aria-label` (where labels actually live, per extractor.TITLE_ATTRS) are
+# left untouched.
+_IMG_URL_ATTRS = re.compile(r'\s+(?:srcset|sizes)="[^"]*"', re.IGNORECASE)
+_STYLE_ATTR = re.compile(r'\s+style="[^"]*"', re.IGNORECASE)
 
 
 class AIExtractionError(Exception):
@@ -31,8 +43,18 @@ def clean_html(html: str, max_chars: int | None = None) -> str:
     max_chars = max_chars or settings.AI["MAX_HTML_CHARS"]
     text = _SCRIPT_STYLE.sub("", html)
     text = _COMMENTS.sub("", text)
+    text = _IMG_URL_ATTRS.sub("", text)
+    text = _STYLE_ATTR.sub("", text)
     text = _MANY_BLANKS.sub("\n", text)
     if len(text) > max_chars:
+        # Silent truncation here means silently missing games further down
+        # the page (or with `use_ai_extraction` off, only spotted by an
+        # operator noticing a suspiciously low games_found). Log it so a
+        # truncated lobby shows up as a signal, not just a gap in the data.
+        logger.warning(
+            "clean_html: truncating %s -> %s chars; extraction may miss content past the cut",
+            len(text), max_chars,
+        )
         text = text[:max_chars] + "\n<!-- truncated -->"
     return text
 

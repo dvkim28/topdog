@@ -1,6 +1,6 @@
-"""Public dashboard.
+"""Landing page + dashboard.
 
-Full page: GET /
+Full pages: GET /  (landing, public preview)  and GET /dashboard/ (full matrix)
 HTMX partials:
     GET /partial/game-table/   -> table body only
     GET /partial/stats/        -> hero stat cards only
@@ -12,12 +12,15 @@ the only wiring needed:
 
 from __future__ import annotations
 
+from django.contrib import messages
+from django.contrib.auth import login as auth_login
 from django.db.models import Count, Max, Q
 from django.http import HttpResponse
-from django.shortcuts import render
+from django.shortcuts import redirect, render
 from django.utils import timezone
-from django.views.decorators.http import require_GET
+from django.views.decorators.http import require_GET, require_http_methods
 
+from .forms import EmailRegistrationForm
 from .models import Region, ScrapeLog, ScrapeRun
 from .services.analytics import (
     PERIOD_CHOICES,
@@ -27,6 +30,8 @@ from .services.analytics import (
     headline_stats,
     resolve_window,
 )
+
+LANDING_PREVIEW_SIZE = 8
 
 CATEGORY_FILTERS = [
     ("all", "All"),
@@ -65,6 +70,40 @@ def _table_context(request):
         "period_choices": PERIOD_CHOICES,
         "category_filters": CATEGORY_FILTERS,
     }
+
+
+@require_GET
+def landing(request):
+    """Public marketing page at /: a small, unfiltered Market Visibility Index
+    preview, plus a link into the full interactive dashboard.
+    """
+    window = resolve_window("last_7_days", None, None)
+    rows = build_rows(window, geo="all", category="all")
+    return render(
+        request,
+        "index/landing.html",
+        {
+            "window": window,
+            "preview_rows": rows[:LANDING_PREVIEW_SIZE],
+            "stats": headline_stats(window, "all", rows),
+        },
+    )
+
+
+@require_http_methods(["GET", "POST"])
+def register(request):
+    if request.user.is_authenticated:
+        return redirect("dashboard")
+    if request.method == "POST":
+        form = EmailRegistrationForm(request.POST)
+        if form.is_valid():
+            user = form.save()
+            auth_login(request, user, backend="index.auth_backends.EmailBackend")
+            messages.success(request, "Account created.")
+            return redirect("dashboard")
+    else:
+        form = EmailRegistrationForm()
+    return render(request, "registration/register.html", {"form": form})
 
 
 @require_GET

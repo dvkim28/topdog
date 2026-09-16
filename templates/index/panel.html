@@ -1,0 +1,148 @@
+{% load static %}<!doctype html>
+<html lang="en" class="h-full">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Admin panel · TopDog</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+</head>
+<body class="min-h-full bg-slate-950 text-slate-300 antialiased">
+
+<header class="sticky top-0 z-20 border-b border-slate-800/80 bg-slate-950/90 backdrop-blur">
+  <div class="mx-auto flex max-w-7xl items-center justify-between gap-4 px-4 py-3 sm:px-6">
+    <a href="{% url 'landing' %}" class="flex items-center gap-2.5">
+      <span class="h-7 w-7 rounded-md bg-emerald-500/15 ring-1 ring-inset ring-emerald-500/30 grid place-items-center">
+        <span class="h-2 w-2 rounded-full bg-emerald-400"></span>
+      </span>
+      <span class="text-sm font-semibold tracking-tight text-slate-100">TopDog · Admin panel</span>
+    </a>
+    <a href="{% url 'dashboard' %}" class="text-xs text-slate-500 hover:text-slate-200">Back to dashboard</a>
+  </div>
+</header>
+
+<main class="mx-auto max-w-7xl space-y-8 px-4 py-8 sm:px-6">
+
+  <!-- Pipeline triggers -->
+  <section>
+    <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+      <h2 class="text-sm font-semibold text-slate-100">Run pipeline</h2>
+      <div class="flex items-center gap-2">
+        <label for="trigger-region" class="text-xs text-slate-500">Market</label>
+        <select id="trigger-region" name="region"
+                class="rounded-lg border border-slate-800 bg-slate-900 px-2.5 py-1.5 text-sm text-slate-200 focus:border-emerald-500/50 focus:outline-none">
+          <option value="">All markets</option>
+          {% for region in regions %}
+            <option value="{{ region.code }}">{{ region.name }} ({{ region.code }})</option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+
+    <div class="grid gap-3 sm:grid-cols-3">
+      <button
+        hx-post="{% url 'panel-trigger' 'discovery' %}"
+        hx-include="#trigger-region"
+        hx-target="#log-feed" hx-swap="innerHTML"
+        hx-indicator="#trigger-busy"
+        class="group rounded-xl border border-slate-700 bg-slate-900 px-4 py-3 text-left transition-colors hover:border-emerald-500/50">
+        <span class="block text-sm font-medium text-slate-200 group-hover:text-emerald-300">Brand discovery</span>
+        <span class="mt-1 block text-xs leading-snug text-slate-500">Finds new operators from enabled registries. Doesn't touch existing brands' games.</span>
+      </button>
+      <button
+        hx-post="{% url 'panel-trigger' 'scrape' %}"
+        hx-include="#trigger-region"
+        hx-target="#log-feed" hx-swap="innerHTML"
+        hx-indicator="#trigger-busy"
+        class="group rounded-xl border border-slate-700 bg-slate-900 px-4 py-3 text-left transition-colors hover:border-emerald-500/50">
+        <span class="block text-sm font-medium text-slate-200 group-hover:text-emerald-300">Game scraping only</span>
+        <span class="mt-1 block text-xs leading-snug text-slate-500">Re-scrapes homepages for every active brand in the selected market. Skips discovery.</span>
+      </button>
+      <button
+        hx-post="{% url 'panel-trigger' 'pipeline' %}"
+        hx-include="#trigger-region"
+        hx-target="#log-feed" hx-swap="innerHTML"
+        hx-indicator="#trigger-busy"
+        class="group rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-4 py-3 text-left transition-colors hover:border-emerald-400">
+        <span class="block text-sm font-medium text-emerald-300">Full pipeline</span>
+        <span class="mt-1 block text-xs leading-snug text-emerald-400/70">Discovery, then game scraping - the same run the nightly schedule does.</span>
+      </button>
+    </div>
+
+    <p id="trigger-busy" class="htmx-indicator mt-2 text-xs text-slate-500">Queuing…</p>
+
+    <div class="mt-4">
+      <h3 class="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Run status</h3>
+      <div id="panel-status" hx-get="{% url 'panel-status' %}" hx-trigger="load, every 5s" hx-swap="innerHTML"></div>
+    </div>
+  </section>
+
+  <div class="grid gap-8 lg:grid-cols-2">
+
+    <!-- Brands: bulk status -->
+    <section>
+      <h2 class="mb-3 text-sm font-semibold text-slate-100">Brands</h2>
+      <form id="brand-form"
+            hx-post="{% url 'panel-bulk-status' %}"
+            hx-target="#brand-table" hx-swap="innerHTML">
+        {% csrf_token %}
+        <div class="mb-3 flex flex-wrap items-center gap-2">
+          <span class="text-xs text-slate-500">Set selected to:</span>
+          {% for value, label in status_choices %}
+            <button type="submit" name="status" value="{{ value }}"
+                    class="rounded-md border border-slate-700 px-2.5 py-1 text-xs font-medium text-slate-300 hover:border-emerald-500/50 hover:text-emerald-300">
+              {{ label }}
+            </button>
+          {% endfor %}
+        </div>
+        <div id="brand-table">
+          {% include "index/partials/panel_brands.html" %}
+        </div>
+      </form>
+    </section>
+
+    <!-- Unmatched tile review queue -->
+    <section>
+      <div class="mb-3 flex items-center justify-between">
+        <h2 class="text-sm font-semibold text-slate-100">Unmatched tile review</h2>
+        <span id="review-count" class="text-xs text-slate-500">{{ review_count }} pending</span>
+      </div>
+      <div id="review-queue" hx-get="{% url 'panel-review-queue' %}" hx-trigger="load, every 15s" hx-swap="innerHTML">
+      </div>
+    </section>
+  </div>
+
+  <!-- Log viewer -->
+  <section>
+    <h2 class="mb-3 text-sm font-semibold text-slate-100">Live log feed</h2>
+    <div id="log-feed" hx-get="{% url 'panel-logs' %}" hx-trigger="load, every 5s" hx-swap="innerHTML">
+    </div>
+  </section>
+
+</main>
+
+<script>
+  // The trigger buttons above post via htmx without a <form>, so there's no
+  // {% templatetag openvariable %} csrf_token {% templatetag closevariable %} field for Django's CSRF
+  // middleware to find - it 403s them, and htmx doesn't swap non-2xx
+  // responses by default, so the click silently does nothing. This attaches
+  // the token to every htmx request on the page instead of every button.
+  document.body.addEventListener('htmx:configRequest', (event) => {
+    event.detail.headers['X-CSRFToken'] = '{{ csrf_token }}';
+  });
+
+  // htmx silently drops non-2xx/3xx responses by default - a 403 (like the
+  // CSRF one above), a 500, or a permission error would all look exactly
+  // like "the button did nothing". Swap those in too and flag the target so
+  // a failure is always visible somewhere on the page.
+  document.body.addEventListener('htmx:beforeSwap', (event) => {
+    if (event.detail.xhr.status >= 400) {
+      event.detail.shouldSwap = true;
+    }
+  });
+  document.body.addEventListener('htmx:responseError', (event) => {
+    console.error('htmx request failed', event.detail.xhr.status, event.detail.xhr.responseURL);
+  });
+</script>
+</body>
+</html>

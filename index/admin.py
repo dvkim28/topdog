@@ -1,6 +1,7 @@
 from django.contrib import admin, messages
 from django.http import HttpResponseRedirect
 from django.urls import path, reverse
+from django.utils import timezone
 from django.utils.html import format_html
 
 from .models import (
@@ -11,13 +12,14 @@ from .models import (
     Game,
     GameAlias,
     HomepagePlacement,
+    NetworkCaptureLog,
     Provider,
     Region,
     ScrapeLog,
     ScrapeRun,
-    UnmatchedTile,
+    UnmatchedTileReview,
 )
-from .tasks import discover_brands_now, run_nightly_pipeline
+from .tasks import discover_brands_now, run_nightly_brand_scraping, run_nightly_pipeline
 
 
 class GameAliasInline(admin.TabularInline):
@@ -48,12 +50,12 @@ class BrandAdmin(admin.ModelAdmin):
     up before the first real scrape.
     """
 
-    list_display = ["name", "region", "short_code", "domain", "status_badge",
+    list_display = ["name", "region", "short_code", "domain", "status_badge", "created_at",
                     "use_ai_extraction", "discovered", "last_checked_at", "consecutive_failures"]
     list_filter = ["status", "region", "use_ai_extraction", "discovered", "operator_group"]
     search_fields = ["name", "domain"]
     prepopulated_fields = {"slug": ("name",)}
-    readonly_fields = ["discovered", "discovery_source", "discovered_at"]
+    readonly_fields = ["discovered", "discovery_source", "discovered_at", "created_at"]
     actions = ["scrape_selected_now", "mark_active", "mark_paused", "mark_delisted"]
 
     @admin.display(description="Status", ordering="status")
@@ -88,11 +90,33 @@ class BrandAdmin(admin.ModelAdmin):
 
 @admin.register(Game)
 class GameAdmin(admin.ModelAdmin):
-    list_display = ["title", "provider", "category", "is_local_favourite"]
-    list_filter = ["category", "provider", "is_local_favourite"]
+    """Hiding a game from the product is `is_active=False`, not deletion -
+    deleting cascades to every HomepagePlacement (and GameAlias) for it, which
+    is exactly what wiped the catalog's scrape history before. Bulk delete is
+    removed here for that reason; disable/enable is the reversible path.
+    """
+
+    list_display = ["title", "provider", "category", "is_active", "is_local_favourite"]
+    list_filter = ["is_active", "category", "provider", "is_local_favourite"]
     search_fields = ["title", "aliases__text"]
     prepopulated_fields = {"slug": ("title",)}
     inlines = [GameAliasInline]
+    actions = ["disable_selected", "enable_selected"]
+
+    def get_actions(self, request):
+        actions = super().get_actions(request)
+        actions.pop("delete_selected", None)
+        return actions
+
+    @admin.action(description="Disable selected (hide from the product)")
+    def disable_selected(self, request, queryset):
+        n = queryset.update(is_active=False)
+        self.message_user(request, f"Disabled {n} game(s). They stay in the catalog but drop off the product.")
+
+    @admin.action(description="Enable selected (show on the product)")
+    def enable_selected(self, request, queryset):
+        n = queryset.update(is_active=True)
+        self.message_user(request, f"Enabled {n} game(s).")
 
 
 @admin.register(ScrapeRun)
@@ -111,17 +135,56 @@ class ScrapeRunAdmin(admin.ModelAdmin):
                 self.admin_site.admin_view(self.run_all_now),
                 name="index_scraperun_run_all_now",
             ),
+            path(
+                "scrape-now/",
+                self.admin_site.admin_view(self.scrape_now),
+                name="index_scraperun_scrape_now",
+            ),
             *super().get_urls(),
         ]
+
+    def changelist_view(self, request, extra_context=None):
+        extra_context = extra_context or {}
+        extra_context["regions"] = Region.objects.filter(is_active=True).order_by("code")
+        return super().changelist_view(request, extra_context=extra_context)
 
     def run_all_now(self, request):
         if request.method != "POST":
             return HttpResponseRedirect(reverse("admin:index_scraperun_changelist"))
-        run_nightly_pipeline.delay(trigger="admin")
+        region_code = request.POST.get("region") or None
+        try:
+            run_nightly_pipeline.delay(trigger="admin", region_code=region_code)
+        except Exception as exc:  # noqa: BLE001 - surfaced to the admin, not a raw 500
+            self.message_user(
+                request, f"Could not queue the task: {exc}. Is the Celery broker (REDIS_URL) running?",
+                messages.ERROR,
+            )
+            return HttpResponseRedirect(reverse("admin:index_scraperun_changelist"))
         self.message_user(
             request,
-            "Queued the full pipeline: brand discovery, then game scraping for "
-            "every active brand. Refresh in a moment for results.",
+            f"Queued the full pipeline{f' for {region_code}' if region_code else ''}: "
+            "brand discovery, then game scraping. Refresh in a moment for results.",
+            messages.SUCCESS,
+        )
+        return HttpResponseRedirect(reverse("admin:index_scraperun_changelist"))
+
+    def scrape_now(self, request):
+        """Game scraping only, skipping discovery - for one market or all of them."""
+        if request.method != "POST":
+            return HttpResponseRedirect(reverse("admin:index_scraperun_changelist"))
+        region_code = request.POST.get("region") or None
+        try:
+            run_nightly_brand_scraping.delay(trigger="admin", region_code=region_code)
+        except Exception as exc:  # noqa: BLE001 - surfaced to the admin, not a raw 500
+            self.message_user(
+                request, f"Could not queue the task: {exc}. Is the Celery broker (REDIS_URL) running?",
+                messages.ERROR,
+            )
+            return HttpResponseRedirect(reverse("admin:index_scraperun_changelist"))
+        self.message_user(
+            request,
+            f"Queued game scraping{f' for {region_code}' if region_code else ''} "
+            "of every active brand. Refresh in a moment for results.",
             messages.SUCCESS,
         )
         return HttpResponseRedirect(reverse("admin:index_scraperun_changelist"))
@@ -196,13 +259,27 @@ class BrandDiscoveryRunAdmin(admin.ModelAdmin):
             *super().get_urls(),
         ]
 
+    def changelist_view(self, request, extra_context=None):
+        extra_context = extra_context or {}
+        extra_context["regions"] = Region.objects.filter(is_active=True).order_by("code")
+        return super().changelist_view(request, extra_context=extra_context)
+
     def discover_now(self, request):
         if request.method != "POST":
             return HttpResponseRedirect(reverse("admin:index_branddiscoveryrun_changelist"))
-        discover_brands_now.delay(trigger="admin")
+        region_code = request.POST.get("region") or None
+        try:
+            discover_brands_now.delay(trigger="admin", region_code=region_code)
+        except Exception as exc:  # noqa: BLE001 - surfaced to the admin, not a raw 500
+            self.message_user(
+                request, f"Could not queue the task: {exc}. Is the Celery broker (REDIS_URL) running?",
+                messages.ERROR,
+            )
+            return HttpResponseRedirect(reverse("admin:index_branddiscoveryrun_changelist"))
         self.message_user(
             request,
-            "Queued brand discovery across every enabled source. Refresh in a moment for results.",
+            f"Queued brand discovery{f' for {region_code}' if region_code else ''} "
+            "across every enabled source. Refresh in a moment for results.",
             messages.SUCCESS,
         )
         return HttpResponseRedirect(reverse("admin:index_branddiscoveryrun_changelist"))
@@ -227,8 +304,8 @@ class BrandDiscoveryLogAdmin(admin.ModelAdmin):
 
 @admin.register(ScrapeLog)
 class ScrapeLogAdmin(admin.ModelAdmin):
-    list_display = ["executed_at", "brand", "status", "games_found", "duration_ms", "short_error"]
-    list_filter = ["status", "brand__region", "brand"]
+    list_display = ["executed_at", "brand", "status", "extraction_mode", "games_found", "duration_ms", "short_error"]
+    list_filter = ["status", "extraction_mode", "brand__region", "brand"]
     search_fields = ["brand__name", "error_message"]
     date_hierarchy = "executed_at"
 
@@ -239,24 +316,66 @@ class ScrapeLogAdmin(admin.ModelAdmin):
 
 @admin.register(HomepagePlacement)
 class HomepagePlacementAdmin(admin.ModelAdmin):
-    list_display = ["created_at", "brand", "game", "placement", "position"]
+    list_display = ["created_at", "brand", "game", "placement", "position", "position_score"]
     list_filter = ["placement", "brand__region", "brand"]
     date_hierarchy = "created_at"
     raw_id_fields = ["game", "brand", "run"]
 
 
-@admin.register(UnmatchedTile)
-class UnmatchedTileAdmin(admin.ModelAdmin):
-    """Review queue: labels the matcher could not resolve to a known title."""
+@admin.register(NetworkCaptureLog)
+class NetworkCaptureLogAdmin(admin.ModelAdmin):
+    """What the Playwright sniffer saw on the wire for each brand."""
 
-    list_display = ["raw_label", "brand", "placement", "best_score", "resolved"]
-    list_filter = ["resolved", "placement", "brand"]
+    list_display = ["captured_at", "brand", "url", "matched_pattern", "status_code", "tile_count", "used"]
+    list_filter = ["used", "matched_pattern", "brand__region", "brand"]
+    search_fields = ["url", "brand__name"]
+    date_hierarchy = "captured_at"
+
+
+@admin.register(UnmatchedTileReview)
+class UnmatchedTileReviewAdmin(admin.ModelAdmin):
+    """Review queue: Tier 1 (RapidFuzz) + Tier 2 (Claude) both failed to resolve.
+
+    Bulk delete is removed: "Reject" is the correct way to dismiss a title
+    (it's a status, reversible via "Reset to pending"), and deleting the row
+    instead just lets the exact same tile come back as a brand-new row on the
+    next scrape - it doesn't record the decision, it erases it.
+    """
+
+    list_display = ["raw_label", "brand", "placement", "best_score", "ai_suggested_new", "status"]
+    list_filter = ["status", "ai_suggested_new", "placement", "brand"]
     search_fields = ["raw_label"]
-    actions = ["mark_resolved"]
+    readonly_fields = ["ai_candidates"]
+    actions = ["mark_rejected", "reset_to_pending"]
 
-    @admin.action(description="Mark as resolved")
-    def mark_resolved(self, request, queryset):
-        queryset.update(resolved=True)
+    def get_actions(self, request):
+        actions = super().get_actions(request)
+        actions.pop("delete_selected", None)
+        return actions
+
+    @admin.action(description="Reject selected")
+    def mark_rejected(self, request, queryset):
+        queryset.update(
+            status=UnmatchedTileReview.Status.REJECTED,
+            reviewed_by=request.user,
+            reviewed_at=timezone.now(),
+        )
+
+    @admin.action(description="Reset to pending (send back to the review queue)")
+    def reset_to_pending(self, request, queryset):
+        """The (brand, normalized) unique constraint means a title with any
+        review row - rejected included - is never re-added by a future
+        scrape. That's correct for a deliberate rejection, but leaves no way
+        back for one made in error (or made before the catalog existed to
+        approve against). This is that way back.
+        """
+        n = queryset.update(
+            status=UnmatchedTileReview.Status.PENDING,
+            resolved_game=None,
+            reviewed_by=None,
+            reviewed_at=None,
+        )
+        self.message_user(request, f"Reset {n} item(s) to pending; they'll show up in the /panel/ review queue.")
 
 
 admin.site.register(Provider)

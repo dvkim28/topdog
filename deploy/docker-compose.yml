@@ -22,8 +22,16 @@ services:
 
   web:
     build: ..
-    command: gunicorn config.wsgi:application --bind 0.0.0.0:8000
+    # migrate is idempotent, so running it on every boot is safe and means a
+    # fresh `docker compose up` doesn't need a separate manual migrate step.
+    command: sh -c "python manage.py migrate && gunicorn config.wsgi:application --bind 0.0.0.0:8000"
     env_file: ../.env
+    environment:
+      # .env is written for `manage.py runserver` on the host (localhost:5432
+      # / localhost:6379). Inside compose, db/redis are reached by service
+      # name instead - these override whatever .env says.
+      DATABASE_URL: postgres://casino:casino@db:5432/casino_index
+      REDIS_URL: redis://redis:6379/0
     ports: ["8000:8000"]
     depends_on:
       db: {condition: service_healthy}
@@ -33,6 +41,9 @@ services:
     build: ..
     command: celery -A config worker -l info --concurrency=4
     env_file: ../.env
+    environment:
+      DATABASE_URL: postgres://casino:casino@db:5432/casino_index
+      REDIS_URL: redis://redis:6379/0
     depends_on: [db, redis]
 
   beat:
@@ -40,6 +51,9 @@ services:
     build: ..
     command: celery -A config beat -l info --scheduler django_celery_beat.schedulers:DatabaseScheduler
     env_file: ../.env
+    environment:
+      DATABASE_URL: postgres://casino:casino@db:5432/casino_index
+      REDIS_URL: redis://redis:6379/0
     depends_on: [db, redis]
 
 volumes:

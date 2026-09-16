@@ -1,0 +1,91 @@
+{% comment %}Returned by GET /panel/review/ and POST .../resolve/, polled every 15s.{% endcomment %}
+{% if resolve_error %}
+  <div class="mb-2 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300">
+    {{ resolve_error }}
+  </div>
+{% endif %}
+<div class="max-h-[28rem] space-y-2 overflow-y-auto">
+  {% for item in items %}
+    <form hx-post="{% url 'panel-review-resolve' item.pk %}" hx-target="#review-queue" hx-swap="innerHTML"
+          class="rounded-xl border border-slate-800 bg-slate-900/40 p-3">
+      {% csrf_token %}
+      <div class="flex items-start justify-between gap-3">
+        <div class="min-w-0">
+          <p class="truncate text-sm font-medium text-slate-100">{{ item.raw_label }}</p>
+          <p class="text-[11px] text-slate-500">
+            {{ item.brand.name }} · {{ item.get_placement_display }} · fuzzy {{ item.best_score|floatformat:2 }}
+            {% if item.ai_suggested_new %}<span class="text-violet-400">· Claude: possible new game</span>{% endif %}
+          </p>
+        </div>
+      </div>
+
+      <div class="mt-2 grid gap-2 sm:grid-cols-2">
+        <div class="rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-2">
+          <p class="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-400/80">
+            Link to existing - no details needed
+          </p>
+          {% if item.ai_candidates %}
+            <div class="space-y-1">
+              {% for c in item.ai_candidates %}
+                <label class="flex cursor-pointer items-center gap-2 text-xs text-slate-300">
+                  <input type="radio" name="game_id" value="{{ c.game_id }}" {% if forloop.first %}checked{% endif %}>
+                  {{ c.title }} <span class="text-slate-600">({{ c.score|floatformat:2 }})</span>
+                </label>
+              {% endfor %}
+            </div>
+          {% else %}
+            <p class="text-[11px] text-slate-500">No close match found automatically.</p>
+          {% endif %}
+          <select name="manual_game_id"
+                  class="mt-1.5 w-full rounded-md border border-slate-700 bg-slate-950 px-2 py-1 text-[11px] text-slate-300 focus:border-emerald-500/50 focus:outline-none">
+            <option value="">Or search the full catalog…</option>
+            {% for g in games %}
+              <option value="{{ g.pk }}">{{ g.title }} ({{ g.provider.name }})</option>
+            {% endfor %}
+          </select>
+          <button type="submit" name="action" value="approve"
+                  class="mt-2 w-full rounded-md bg-emerald-500/15 px-2.5 py-1 text-[11px] font-medium text-emerald-300 ring-1 ring-inset ring-emerald-500/30 hover:bg-emerald-500/25">
+            Link to selected game
+          </button>
+        </div>
+
+        <div class="rounded-lg border border-violet-500/20 bg-violet-500/5 p-2">
+          <p class="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-violet-400/80">
+            Genuinely new - needs both fields
+          </p>
+          <div class="space-y-1.5">
+            <select name="category"
+                    class="w-full rounded-md border border-slate-700 bg-slate-950 px-2 py-1 text-[11px] text-slate-300 focus:border-violet-500/50 focus:outline-none">
+              <option value="">Category…</option>
+              {% for value, label in category_choices %}
+                <option value="{{ value }}">{{ label }}</option>
+              {% endfor %}
+            </select>
+            <select name="provider_id"
+                    class="w-full rounded-md border border-slate-700 bg-slate-950 px-2 py-1 text-[11px] text-slate-300 focus:border-violet-500/50 focus:outline-none">
+              <option value="">Provider…</option>
+              {% for p in providers %}
+                <option value="{{ p.pk }}">{{ p.name }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <button type="submit" name="action" value="new_game"
+                  class="mt-2 w-full rounded-md bg-violet-500/15 px-2.5 py-1 text-[11px] font-medium text-violet-300 ring-1 ring-inset ring-violet-500/30 hover:bg-violet-500/25">
+            Create as new game
+          </button>
+        </div>
+      </div>
+
+      <div class="mt-2 flex justify-end">
+        <button type="submit" name="action" value="reject"
+                class="rounded-md bg-slate-800 px-2.5 py-1 text-[11px] font-medium text-slate-400 ring-1 ring-inset ring-slate-700 hover:text-slate-200">
+          Reject (not a real game)
+        </button>
+      </div>
+    </form>
+  {% empty %}
+    <p class="rounded-xl border border-slate-800 bg-slate-900/40 px-3 py-6 text-center text-xs text-slate-500">
+      Nothing pending review.
+    </p>
+  {% endfor %}
+</div>

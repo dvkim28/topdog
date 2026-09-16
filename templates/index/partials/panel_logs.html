@@ -1,0 +1,27 @@
+{% comment %}Returned by GET /panel/logs/, polled every 5s.{% endcomment %}
+{% if trigger_message %}
+  <div class="mb-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-300">
+    {{ trigger_message }}
+  </div>
+{% endif %}
+{% if trigger_error %}
+  <div class="mb-2 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300">
+    {{ trigger_error }}
+  </div>
+{% endif %}
+<div class="max-h-[28rem] space-y-1 overflow-y-auto rounded-xl border border-slate-800 bg-slate-900/40 p-2">
+  {% for entry in entries %}
+    <div class="flex items-center gap-3 rounded-lg px-2 py-1.5 text-xs hover:bg-slate-800/30">
+      <span class="w-32 shrink-0 text-slate-500">{{ entry.at|date:"d M H:i:s" }}</span>
+      <span class="w-16 shrink-0 rounded px-1.5 py-0.5 text-center text-[10px] font-medium ring-1 ring-inset
+        {% if entry.kind == 'scrape' %}bg-emerald-400/10 text-emerald-300 ring-emerald-400/25
+        {% elif entry.kind == 'discovery' %}bg-violet-400/10 text-violet-300 ring-violet-400/25
+        {% else %}bg-sky-400/10 text-sky-300 ring-sky-400/25{% endif %}">
+        {{ entry.kind }}
+      </span>
+      <span class="{% if not entry.ok %}text-rose-400{% else %}text-slate-300{% endif %} truncate">{{ entry.text }}</span>
+    </div>
+  {% empty %}
+    <p class="px-2 py-6 text-center text-slate-500">No activity yet. Trigger a run above.</p>
+  {% endfor %}
+</div>

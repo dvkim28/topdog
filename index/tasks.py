@@ -38,12 +38,14 @@ from .models import (
     BrandDiscoveryLog,
     BrandDiscoveryRun,
     BrandDiscoverySource,
+    ExtractionMode,
     HomepagePlacement,
+    NetworkCaptureLog,
     Placement,
     Region,
     ScrapeLog,
     ScrapeRun,
-    UnmatchedTile,
+    UnmatchedTileReview,
 )
 
 logger = get_task_logger(__name__)
@@ -53,56 +55,36 @@ logger = get_task_logger(__name__)
 # Scraper front end
 # --------------------------------------------------------------------------
 
-def _scrape_live(brand: Brand) -> list[dict]:
-    """Real fetch + parse. Respects robots.txt and per-host delay.
+def _scrape_live(brand: Brand) -> tuple[list[dict], str, list]:
+    """Real scrape. Playwright network-sniffs the lobby/live JSON first;
+    falls back to DOM extraction (AI or CSS) only if nothing usable was
+    captured within the sniff window. See services/scraper.py.
 
-    Fetches the lobby page, and the live-casino page too if the brand has a
-    separate one configured. Extraction is AI-based by default
-    (`brand.use_ai_extraction`); set it off per brand to fall back to CSS
-    selectors, e.g. while an API key isn't configured yet.
+    Matching is two-tier (services/normalization.py): RapidFuzz first,
+    Claude for whatever Tier 1 can't confidently resolve. Whatever's left
+    after both tiers becomes an UnmatchedTileReview row.
+
+    Returns (rows, extraction_mode, network_log_entries).
     """
-    from .scraping.fetcher import fetch_homepage
-    from .scraping.matching import GameMatcher, normalize
+    from .services.normalization import resolve_tiles
+    from .services.scoring import positional_score
+    from .services.scraper import scrape_brand as sniff_brand
 
-    lobby = fetch_homepage(brand.homepage_url)
-    pages = {"lobby": lobby.html}
-    if brand.live_casino_url:
-        pages["live"] = fetch_homepage(brand.live_casino_url).html
+    outcome = sniff_brand(brand)
+    resolved, reviews = resolve_tiles(outcome.tiles, brand)
+    UnmatchedTileReview.objects.bulk_create(reviews, ignore_conflicts=True)
 
-    if brand.use_ai_extraction and settings.AI["ENABLED"]:
-        from .scraping.ai_extract import extract_tiles_ai
-
-        tiles = extract_tiles_ai(pages)
-    else:
-        from .scraping.extractor import extract_tiles
-
-        tiles = extract_tiles(lobby.html, brand.selectors)
-
-    matcher = GameMatcher.from_db()
-    rows, unmatched = [], []
-    for tile in tiles:
-        outcome = matcher.match(tile.raw_label)
-        if outcome.game_id:
-            rows.append(
-                {
-                    "game_id": outcome.game_id,
-                    "placement": tile.placement,
-                    "position": tile.position,
-                    "raw_label": tile.raw_label,
-                }
-            )
-        else:
-            unmatched.append(
-                UnmatchedTile(
-                    brand=brand,
-                    raw_label=tile.raw_label[:220],
-                    normalized=normalize(tile.raw_label)[:220],
-                    placement=tile.placement,
-                    best_score=outcome.score,
-                )
-            )
-    UnmatchedTile.objects.bulk_create(unmatched, ignore_conflicts=True)
-    return rows
+    rows = [
+        {
+            "game_id": r.game_id,
+            "placement": r.placement,
+            "position": r.position,
+            "raw_label": r.raw_label,
+            "position_score": positional_score(r.placement, r.position, r.row, r.column),
+        }
+        for r in resolved
+    ]
+    return rows, outcome.extraction_mode, outcome.network_logs
 
 
 def _scrape_mock(brand: Brand, day_seed: int = 0) -> list[dict]:
@@ -112,6 +94,7 @@ def _scrape_mock(brand: Brand, day_seed: int = 0) -> list[dict]:
     out, which is what makes the trend badges move.
     """
     from .models import Game
+    from .services.scoring import positional_score
 
     games = list(Game.objects.values_list("id", "title", "is_local_favourite"))
     if not games:
@@ -119,6 +102,7 @@ def _scrape_mock(brand: Brand, day_seed: int = 0) -> list[dict]:
 
     rng = random.Random(f"{brand.slug}:{day_seed}")
     rows = []
+    section_positions = {Placement.HERO: 0, Placement.GRID: 0, Placement.LIVE_SECTION: 0}
     for rank, (game_id, _title, is_local) in enumerate(games):
         # Head titles: high base probability. Tail: low, and noisier.
         base = max(0.12, 0.95 - rank * 0.055)
@@ -130,12 +114,15 @@ def _scrape_mock(brand: Brand, day_seed: int = 0) -> list[dict]:
             [Placement.HERO, Placement.GRID, Placement.LIVE_SECTION],
             weights=[0.2, 0.5, 0.3],
         )[0]
+        position = section_positions[placement]
+        section_positions[placement] += 1
         rows.append(
             {
                 "game_id": game_id,
                 "placement": placement,
-                "position": len(rows),
+                "position": position,
                 "raw_label": "",
+                "position_score": positional_score(placement, position),
             }
         )
     if rng.random() < 0.04:  # occasional flaky brand, to exercise ScrapeLog
@@ -150,9 +137,14 @@ def scrape_brand_sync(brand: Brand, run: ScrapeRun | None = None, day_seed: int 
     """
     started = time.monotonic()
     mock = getattr(settings, "SCRAPER_MODE", "mock") == "mock"
+    extraction_mode = ExtractionMode.MOCK
+    network_logs: list = []
 
     try:
-        rows = _scrape_mock(brand, day_seed) if mock else _scrape_live(brand)
+        if mock:
+            rows = _scrape_mock(brand, day_seed)
+        else:
+            rows, extraction_mode, network_logs = _scrape_live(brand)
     except Exception as exc:  # noqa: BLE001 - recorded, not swallowed
         logger.warning("Scrape failed for %s: %s", brand, exc)
         Brand.objects.filter(pk=brand.pk).update(
@@ -164,6 +156,7 @@ def scrape_brand_sync(brand: Brand, run: ScrapeRun | None = None, day_seed: int 
             brand=brand,
             status=ScrapeLog.Status.FAILED,
             games_found=0,
+            extraction_mode=extraction_mode,
             error_message=f"{type(exc).__name__}: {exc}"[:2000],
             duration_ms=int((time.monotonic() - started) * 1000),
         )
@@ -179,11 +172,27 @@ def scrape_brand_sync(brand: Brand, run: ScrapeRun | None = None, day_seed: int 
                     placement=row["placement"],
                     position=row["position"],
                     raw_label=row["raw_label"][:220],
+                    position_score=row.get("position_score", 0.0),
                     detected_at=now,
                 )
                 for row in rows
             ],
             batch_size=500,
+        )
+        NetworkCaptureLog.objects.bulk_create(
+            [
+                NetworkCaptureLog(
+                    run=run,
+                    brand=brand,
+                    url=entry.url[:500],
+                    matched_pattern=entry.matched_pattern,
+                    status_code=entry.status_code,
+                    tile_count=entry.tile_count,
+                    used=entry.used,
+                )
+                for entry in network_logs
+            ],
+            batch_size=200,
         )
         Brand.objects.filter(pk=brand.pk).update(
             last_checked_at=now, consecutive_failures=0
@@ -193,10 +202,11 @@ def scrape_brand_sync(brand: Brand, run: ScrapeRun | None = None, day_seed: int 
             brand=brand,
             status=ScrapeLog.Status.SUCCESS,
             games_found=len(rows),
+            extraction_mode=extraction_mode,
             duration_ms=int((time.monotonic() - started) * 1000),
         )
 
-    logger.info("%s: %s placements", brand, len(rows))
+    logger.info("%s: %s placements (%s)", brand, len(rows), extraction_mode)
     return log
 
 
@@ -306,16 +316,20 @@ def discover_all_brands(trigger: str = "beat", region_code: str | None = None) -
 
 
 @shared_task(name="index.tasks.discover_brands_now")
-def discover_brands_now(trigger: str = "manual") -> int:
+def discover_brands_now(trigger: str = "manual", region_code: str | None = None) -> int:
     """Task wrapper for the admin action / manual trigger. Runs in the worker."""
-    return discover_all_brands(trigger=trigger).pk
+    return discover_all_brands(trigger=trigger, region_code=region_code).pk
 
 
 @shared_task(name="index.tasks.run_nightly_pipeline")
-def run_nightly_pipeline(trigger: str = "beat") -> dict:
-    """Beat's actual entry point. Discover first, then scrape games."""
-    discovery_run = discover_all_brands(trigger=trigger)
-    scrape_run_id = run_nightly_brand_scraping(trigger=trigger)
+def run_nightly_pipeline(trigger: str = "beat", region_code: str | None = None) -> dict:
+    """Beat's actual entry point. Discover first, then scrape games.
+
+    `region_code` scopes both halves to one region - discovery only looks at
+    that region's sources, and the scrape chord only fans out to its brands.
+    """
+    discovery_run = discover_all_brands(trigger=trigger, region_code=region_code)
+    scrape_run_id = run_nightly_brand_scraping(trigger=trigger, region_code=region_code)
     return {"discovery_run_id": discovery_run.pk, "scrape_run_id": scrape_run_id}
 
 
@@ -392,7 +406,7 @@ def prune_placements() -> dict:
     days = settings.CRAWLER["SNAPSHOT_RETENTION_DAYS"]
     cutoff = timezone.now() - dt.timedelta(days=days)
     deleted, _ = HomepagePlacement.objects.filter(created_at__lt=cutoff).delete()
-    UnmatchedTile.objects.filter(resolved=True).delete()
+    UnmatchedTileReview.objects.exclude(status=UnmatchedTileReview.Status.PENDING).delete()
     logger.info("Pruned %s placements older than %s days", deleted, days)
     return {"placements": deleted}
 

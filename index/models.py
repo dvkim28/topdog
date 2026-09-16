@@ -1,5 +1,21 @@
+from django.conf import settings
 from django.db import models
 from django.utils import timezone
+
+
+class ExtractionMode(models.TextChoices):
+    """How a scrape actually got its tiles, recorded per ScrapeLog.
+
+    NETWORK_API is the primary path: a lobby/games JSON payload was sniffed
+    straight off the wire. DOM_AI / DOM_CSS are the HTML fallback, used when
+    no matching JSON response showed up within the sniff deadline. MOCK is
+    the deterministic fake-data path used when SCRAPER_MODE=mock.
+    """
+
+    NETWORK_API = "network_api", "Network API sniff"
+    DOM_AI = "dom_ai", "DOM (AI extraction)"
+    DOM_CSS = "dom_css", "DOM (CSS selectors)"
+    MOCK = "mock", "Mock"
 
 
 class Category(models.TextChoices):
@@ -104,6 +120,10 @@ class Brand(models.Model):
 
     last_checked_at = models.DateTimeField(null=True, blank=True)
     consecutive_failures = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(
+        null=True, blank=True, auto_now_add=True,
+        help_text="When this brand row was added. Null for brands that existed before this field did.",
+    )
 
     discovered = models.BooleanField(
         default=False, help_text="Created by the discovery scraper rather than seeded by hand"
@@ -128,6 +148,11 @@ class Game(models.Model):
     category = models.CharField(max_length=32, choices=Category.choices)
     is_local_favourite = models.BooleanField(
         default=False, help_text="Market-specific title, e.g. MGA Games licensed IP in Spain"
+    )
+    is_active = models.BooleanField(
+        default=True,
+        help_text="Unchecking hides this game from the product (dashboard, brand pages) without "
+                  "deleting it or its scrape history - the reversible alternative to deletion.",
     )
     note_en = models.TextField(blank=True)
     note_es = models.TextField(blank=True)
@@ -181,7 +206,11 @@ class BrandDiscoverySource(models.Model):
     )
     # CSS fallback for use_ai_extraction=False, e.g.
     # {"row": "table.operators tr", "name": "td.operator-name",
-    #  "domain": "td.website a", "licence": "td.licence-no"}
+    #  "domain": "td.website a", "licence": "td.licence-no",
+    #  "next_page": "a.pagination-next", "load_more": "button.load-more"}
+    # next_page/load_more are optional overrides for pagination/lazy-load
+    # detection (index/scraping/discovery.py) and apply to both AI and CSS
+    # sources - auto-detection is tried first and usually doesn't need them.
     selectors = models.JSONField(default=dict, blank=True)
     enabled = models.BooleanField(default=True)
     notes = models.TextField(blank=True)
@@ -282,6 +311,11 @@ class HomepagePlacement(models.Model):
     placement = models.CharField(max_length=20, choices=Placement.choices)
     position = models.PositiveIntegerField(default=0, help_text="Index within its section")
     raw_label = models.CharField(max_length=220, blank=True)
+    position_score = models.FloatField(
+        default=0.0,
+        help_text="Positional visibility score (services/scoring.py): section weight "
+                  "decayed by on-page position.",
+    )
 
     detected_at = models.DateTimeField(default=timezone.now, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
@@ -310,6 +344,10 @@ class ScrapeLog(models.Model):
     brand = models.ForeignKey(Brand, on_delete=models.CASCADE, related_name="scrape_logs")
     status = models.CharField(max_length=12, choices=Status.choices)
     games_found = models.IntegerField(default=0)
+    extraction_mode = models.CharField(
+        max_length=16, choices=ExtractionMode.choices, blank=True,
+        help_text="How the tiles were actually captured for this run.",
+    )
     error_message = models.TextField(blank=True, null=True)
     duration_ms = models.PositiveIntegerField(default=0)
     executed_at = models.DateTimeField(auto_now_add=True, db_index=True)
@@ -322,20 +360,87 @@ class ScrapeLog(models.Model):
         return f"{self.brand} {self.status} @ {self.executed_at:%Y-%m-%d %H:%M}"
 
 
-class UnmatchedTile(models.Model):
-    """Tiles the matcher could not resolve. Review queue for new titles."""
+class NetworkCaptureLog(models.Model):
+    """One network response inspected by the Playwright sniffer for a scrape.
+
+    Written for every response the scraper checked against the lobby/games
+    URL patterns, matched or not, so the admin log viewer and the extraction
+    fallback decision (`ScrapeLog.extraction_mode`) can both be audited.
+    """
+
+    run = models.ForeignKey(
+        ScrapeRun, on_delete=models.CASCADE, related_name="network_logs", null=True, blank=True
+    )
+    brand = models.ForeignKey(Brand, on_delete=models.CASCADE, related_name="network_logs")
+    url = models.URLField(max_length=500)
+    matched_pattern = models.CharField(
+        max_length=40, blank=True, help_text="e.g. /games, /lobby, /tiles - blank if inspected but not matched"
+    )
+    status_code = models.PositiveIntegerField(null=True, blank=True)
+    tile_count = models.PositiveIntegerField(
+        default=0, help_text="Tiles successfully parsed out of this payload, 0 if it wasn't usable"
+    )
+    used = models.BooleanField(default=False, help_text="Whether this payload was the one used for the scrape")
+    captured_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ["-captured_at"]
+        indexes = [models.Index(fields=["brand", "-captured_at"])]
+
+    def __str__(self):
+        return f"{self.url} [{self.status_code}]"
+
+
+class UnmatchedTileReview(models.Model):
+    """Tiles Tier 1 (RapidFuzz) and Tier 2 (Claude) both failed to resolve.
+
+    Tier 2 batches these through the Claude API before they land here, so
+    `ai_candidates` / `ai_suggested_new` already reflect the model's best
+    attempt; a human only needs to confirm, pick a different candidate, or
+    approve a genuinely new game.
+    """
+
+    class Status(models.TextChoices):
+        PENDING = "pending", "Pending review"
+        APPROVED = "approved", "Approved (matched to game)"
+        REJECTED = "rejected", "Rejected"
+        NEW_GAME = "new_game", "Approved as new game"
 
     brand = models.ForeignKey(Brand, on_delete=models.CASCADE, related_name="unmatched")
     raw_label = models.CharField(max_length=220)
     normalized = models.CharField(max_length=220, db_index=True)
     placement = models.CharField(max_length=20, choices=Placement.choices)
-    best_guess = models.ForeignKey(Game, null=True, blank=True, on_delete=models.SET_NULL)
-    best_score = models.FloatField(default=0)
-    resolved = models.BooleanField(default=False)
+    best_guess = models.ForeignKey(
+        Game, null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
+    )
+    best_score = models.FloatField(default=0, help_text="Tier 1 RapidFuzz score, 0-1")
+    ai_candidates = models.JSONField(
+        default=list, blank=True,
+        help_text="Tier 2 Claude response: [{'game_id': int, 'title': str, 'confidence': float}, ...]",
+    )
+    ai_suggested_new = models.BooleanField(
+        default=False, help_text="Claude judged this a NEW_GAME not yet in the catalogue"
+    )
+    status = models.CharField(max_length=12, choices=Status.choices, default=Status.PENDING)
+    resolved_game = models.ForeignKey(
+        Game, null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
+    )
+    reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL
+    )
+    reviewed_at = models.DateTimeField(null=True, blank=True)
     seen_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         ordering = ["-best_score"]
+        indexes = [models.Index(fields=["status", "-seen_at"])]
+        # tasks.py bulk_creates these with ignore_conflicts=True specifically
+        # to avoid re-adding a title every night it stays unresolved; without
+        # this constraint that call has nothing to conflict on, so an
+        # unresolved title piles up a fresh duplicate row per scrape run.
+        constraints = [
+            models.UniqueConstraint(fields=["brand", "normalized"], name="unique_unmatched_tile_per_brand"),
+        ]
 
     def __str__(self):
         return self.raw_label

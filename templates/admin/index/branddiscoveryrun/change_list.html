@@ -3,9 +3,15 @@
   <li>
     <form method="post" action="{% url 'admin:index_branddiscoveryrun_discover_now' %}" style="display:inline">
       {% csrf_token %}
+      <select name="region" style="padding:6px;border-radius:4px;margin-right:6px">
+        <option value="">All markets</option>
+        {% for region in regions %}
+          <option value="{{ region.code }}">{{ region.name }} ({{ region.code }})</option>
+        {% endfor %}
+      </select>
       <button type="submit" class="button"
               style="background:#7c6df2;color:#fff;border:0;padding:8px 14px;border-radius:4px;cursor:pointer"
-              onclick="return confirm('Run brand discovery across every enabled source now?')">
+              onclick="return confirm('Run brand discovery for the selected market (or all markets if none is selected)?')">
         Discover Brands Now
       </button>
     </form>
