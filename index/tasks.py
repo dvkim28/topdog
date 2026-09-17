@@ -55,22 +55,34 @@ logger = get_task_logger(__name__)
 # Scraper front end
 # --------------------------------------------------------------------------
 
-def _scrape_live(brand: Brand) -> tuple[list[dict], str, list]:
+def _scrape_live(brand: Brand) -> tuple[list[dict], str, list, str, bool]:
     """Real scrape. Playwright network-sniffs the lobby/live JSON first;
-    falls back to DOM extraction (AI or CSS) only if nothing usable was
-    captured within the sniff window. See services/scraper.py.
+    falls back to DOM extraction (embedded JSON, then CSS selectors, then AI
+    as a last, self-healing resort) only if nothing usable was captured
+    within the sniff window. See services/scraper.py.
+
+    Before any of that pays for itself, `scrape_brand()` hashes the content
+    it just fetched and compares it to `Brand.content_hash` - the last state
+    actually seen for THIS brand, not "yesterday" (manual checks can run
+    several times a day, or be skipped for days). A hash match means nothing
+    changed, so `outcome.unchanged` comes back True and `outcome.tiles` is
+    empty: Tier 1/2 matching (the AI cost) never runs at all.
 
     Matching is two-tier (services/normalization.py): RapidFuzz first,
     Claude for whatever Tier 1 can't confidently resolve. Whatever's left
     after both tiers becomes an UnmatchedTileReview row.
 
-    Returns (rows, extraction_mode, network_log_entries).
+    Returns (rows, extraction_mode, network_log_entries, content_hash, unchanged).
+    `rows` is [] when unchanged - the caller replays `Brand.latest_snapshot` instead.
     """
     from .services.normalization import resolve_tiles
     from .services.scoring import positional_score
     from .services.scraper import scrape_brand as sniff_brand
 
     outcome = sniff_brand(brand)
+    if outcome.unchanged:
+        return [], outcome.extraction_mode, outcome.network_logs, outcome.content_hash, True
+
     resolved, reviews = resolve_tiles(outcome.tiles, brand)
     UnmatchedTileReview.objects.bulk_create(reviews, ignore_conflicts=True)
 
@@ -84,7 +96,7 @@ def _scrape_live(brand: Brand) -> tuple[list[dict], str, list]:
         }
         for r in resolved
     ]
-    return rows, outcome.extraction_mode, outcome.network_logs
+    return rows, outcome.extraction_mode, outcome.network_logs, outcome.content_hash, False
 
 
 def _scrape_mock(brand: Brand, day_seed: int = 0) -> list[dict]:
@@ -135,16 +147,20 @@ def scrape_brand_sync(brand: Brand, run: ScrapeRun | None = None, day_seed: int 
 
     Never raises: a brand failure is data, not an outage.
     """
+    from .scraping.diffing import diff_snapshots
+
     started = time.monotonic()
     mock = getattr(settings, "SCRAPER_MODE", "mock") == "mock"
     extraction_mode = ExtractionMode.MOCK
     network_logs: list = []
+    content_hash = ""
+    unchanged = False
 
     try:
         if mock:
             rows = _scrape_mock(brand, day_seed)
         else:
-            rows, extraction_mode, network_logs = _scrape_live(brand)
+            rows, extraction_mode, network_logs, content_hash, unchanged = _scrape_live(brand)
     except Exception as exc:  # noqa: BLE001 - recorded, not swallowed
         logger.warning("Scrape failed for %s: %s", brand, exc)
         Brand.objects.filter(pk=brand.pk).update(
@@ -162,6 +178,19 @@ def scrape_brand_sync(brand: Brand, run: ScrapeRun | None = None, day_seed: int 
         )
 
     now = timezone.now()
+    snapshot_diff: dict = {}
+    if unchanged:
+        # Content hash matched Brand.content_hash - nothing to extract or
+        # match, so replay the last resolved state straight from
+        # Brand.latest_snapshot. This keeps the dashboard's daily-presence
+        # rows going (services/analytics.py counts one row per game per day
+        # it was featured) at zero extraction/matching/AI cost, instead of
+        # paying for a full re-scrape just to reconfirm "still there".
+        rows = list(brand.latest_snapshot)
+    else:
+        rows = [{**row, "raw_label": row["raw_label"][:220]} for row in rows]
+        snapshot_diff = diff_snapshots(brand.latest_snapshot, rows).as_dict()
+
     with transaction.atomic():
         HomepagePlacement.objects.bulk_create(
             [
@@ -171,7 +200,7 @@ def scrape_brand_sync(brand: Brand, run: ScrapeRun | None = None, day_seed: int 
                     game_id=row["game_id"],
                     placement=row["placement"],
                     position=row["position"],
-                    raw_label=row["raw_label"][:220],
+                    raw_label=row["raw_label"],
                     position_score=row.get("position_score", 0.0),
                     detected_at=now,
                 )
@@ -194,15 +223,21 @@ def scrape_brand_sync(brand: Brand, run: ScrapeRun | None = None, day_seed: int 
             ],
             batch_size=200,
         )
-        Brand.objects.filter(pk=brand.pk).update(
-            last_checked_at=now, consecutive_failures=0
-        )
+        brand_update = {"last_checked_at": now, "consecutive_failures": 0}
+        if not unchanged:
+            # Only advance the comparison point on a run that actually looked
+            # at fresh content - an unchanged run's hash/snapshot are already
+            # identical to what's stored, so there's nothing to advance to.
+            brand_update["content_hash"] = content_hash
+            brand_update["latest_snapshot"] = rows
+        Brand.objects.filter(pk=brand.pk).update(**brand_update)
         log = ScrapeLog.objects.create(
             run=run,
             brand=brand,
             status=ScrapeLog.Status.SUCCESS,
             games_found=len(rows),
             extraction_mode=extraction_mode,
+            snapshot_diff=snapshot_diff,
             duration_ms=int((time.monotonic() - started) * 1000),
         )
 

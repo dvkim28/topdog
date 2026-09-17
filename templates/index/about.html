@@ -1,0 +1,51 @@
+{% load static %}<!doctype html>
+<html lang="en" class="h-full">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>About · TopDog</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="min-h-full bg-slate-950 text-slate-300 antialiased">
+
+{% include "index/partials/site_header.html" %}
+
+<main class="mx-auto max-w-3xl px-4 py-16 sm:px-6 lg:py-24">
+  <span class="inline-flex items-center gap-1.5 rounded-full bg-violet-400/10 px-3 py-1 text-xs font-medium text-violet-300 ring-1 ring-inset ring-violet-400/25">
+    About
+  </span>
+  <h1 class="mt-5 text-3xl font-semibold leading-tight tracking-tight text-slate-50 sm:text-4xl">
+    What TopDog is, and what it isn't.
+  </h1>
+
+  <div class="mt-8 space-y-6 text-sm leading-relaxed text-slate-400">
+    <p>
+      TopDog is a Market Visibility Index (MVI) for regulated online casinos. Every night, it reads the
+      same homepage and live-casino lobby data that licensed operators load for their own players, and
+      turns it into a single, comparable score: which games each operator is actually merchandising, and
+      how prominently.
+    </p>
+    <p>
+      Placement matters as much as presence. A title sitting in a hero carousel is worth more than the same
+      title buried on page three of a grid, so every tile is weighted by section and on-page position
+      before anything is ranked. Those scores roll up per game, per provider, and per regulated market, so
+      trends - a new release rolling out across operators, a provider gaining shelf space, a market's tastes
+      shifting - show up as they happen rather than months later.
+    </p>
+    <p>
+      Everything the index runs on comes directly from public-facing pages of licensed operators; nothing
+      here is an invitation to play, and no player-level or account data is collected or published.
+    </p>
+  </div>
+
+  <div class="mt-10">
+    <a href="{% url 'dashboard' %}"
+       class="rounded-lg bg-emerald-500 px-4 py-2.5 text-sm font-semibold text-slate-950 hover:bg-emerald-400">
+      Explore the full index
+    </a>
+  </div>
+</main>
+
+{% include "index/partials/site_footer.html" %}
+</body>
+</html>

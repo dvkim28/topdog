@@ -13,8 +13,10 @@ class ExtractionMode(models.TextChoices):
     """
 
     NETWORK_API = "network_api", "Network API sniff"
+    DOM_JSON = "dom_json", "DOM (embedded JSON)"
     DOM_AI = "dom_ai", "DOM (AI extraction)"
     DOM_CSS = "dom_css", "DOM (CSS selectors)"
+    UNCHANGED = "unchanged", "Unchanged (hash match, skipped)"
     MOCK = "mock", "Mock"
 
 
@@ -120,6 +122,23 @@ class Brand(models.Model):
 
     last_checked_at = models.DateTimeField(null=True, blank=True)
     consecutive_failures = models.PositiveIntegerField(default=0)
+
+    content_hash = models.CharField(
+        max_length=64, blank=True,
+        help_text="SHA-256 of the last scraped page content (sniffed JSON tiles, or cleaned homepage "
+                  "HTML when falling back to DOM extraction). Comparing against this - not against "
+                  "'yesterday' - lets a scrape short-circuit before any parsing/matching/AI cost when "
+                  "nothing has changed since the last check, whenever that was: manual checks can run "
+                  "several times a day, or be skipped entirely.",
+    )
+    latest_snapshot = models.JSONField(
+        default=list, blank=True,
+        help_text="The last resolved list of homepage placements for this brand: "
+                  "[{'game_id', 'placement', 'position', 'raw_label', 'position_score'}, ...]. "
+                  "Replayed straight into HomepagePlacement on a hash-unchanged run (so the daily "
+                  "dashboard snapshot keeps a row for that day at zero extraction/matching cost), and "
+                  "diffed against on a changed run to log what was added/removed/moved.",
+    )
     created_at = models.DateTimeField(
         null=True, blank=True, auto_now_add=True,
         help_text="When this brand row was added. Null for brands that existed before this field did.",
@@ -348,6 +367,12 @@ class ScrapeLog(models.Model):
         max_length=16, choices=ExtractionMode.choices, blank=True,
         help_text="How the tiles were actually captured for this run.",
     )
+    snapshot_diff = models.JSONField(
+        default=dict, blank=True,
+        help_text="Change vs. Brand.latest_snapshot at the start of this run: "
+                  "{'added': [...], 'removed': [...], 'moved': [...]}. Empty on an UNCHANGED run "
+                  "(hash matched, nothing to diff) or on a brand's first successful run.",
+    )
     error_message = models.TextField(blank=True, null=True)
     duration_ms = models.PositiveIntegerField(default=0)
     executed_at = models.DateTimeField(auto_now_add=True, db_index=True)
@@ -420,6 +445,15 @@ class UnmatchedTileReview(models.Model):
     )
     ai_suggested_new = models.BooleanField(
         default=False, help_text="Claude judged this a NEW_GAME not yet in the catalogue"
+    )
+    ai_suggested_provider = models.CharField(
+        max_length=120, blank=True,
+        help_text="Claude's best guess at the provider/studio, prefilled into the review form - never "
+                  "used to create anything without a human clicking Approve.",
+    )
+    ai_suggested_category = models.CharField(
+        max_length=32, blank=True, choices=Category.choices,
+        help_text="Claude's best guess at the category, prefilled into the review form.",
     )
     status = models.CharField(max_length=12, choices=Status.choices, default=Status.PENDING)
     resolved_game = models.ForeignKey(

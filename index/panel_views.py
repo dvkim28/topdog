@@ -13,7 +13,6 @@ from django.contrib.admin.views.decorators import staff_member_required
 from django.contrib.auth.decorators import login_required
 from django.shortcuts import get_object_or_404, render
 from django.utils import timezone
-from django.utils.text import slugify
 from django.views.decorators.http import require_GET, require_POST
 
 from .models import (
@@ -32,6 +31,7 @@ from .models import (
     ScrapeRun,
     UnmatchedTileReview,
 )
+from .services.normalization import get_or_create_provider, unique_slug
 from .services.scoring import positional_score
 from .tasks import discover_brands_now, run_nightly_brand_scraping, run_nightly_pipeline
 
@@ -85,24 +85,36 @@ def _recent_runs(limit: int = RECENT_RUNS_SIZE) -> list[dict]:
     return rows[:limit]
 
 
+def _brands_for(region_code: str | None):
+    brands = Brand.objects.select_related("region").order_by("region__code", "name")
+    if region_code:
+        brands = brands.filter(region__code=region_code)
+    return brands
+
+
 @_staff_required
 @require_GET
 def panel_home(request):
-    brands = Brand.objects.select_related("region").order_by("region__code", "name")
+    region_code = request.GET.get("region") or ""
     return render(
         request,
         "index/panel.html",
         {
-            "brands": brands,
             "status_choices": Brand.Status.choices,
             "regions": Region.objects.filter(is_active=True).order_by("code"),
-            "review_count": UnmatchedTileReview.objects.filter(
-                status=UnmatchedTileReview.Status.PENDING
-            ).count(),
+            "selected_region": region_code,
+            "review_count": _review_count(region_code),
             "worker_online": _worker_online(),
             "recent_runs": _recent_runs(),
         },
     )
+
+
+@_staff_required
+@require_GET
+def panel_brands(request):
+    """The market selector re-fetches this on change - see #market-filter in panel.html."""
+    return render(request, "index/partials/panel_brands.html", {"brands": _brands_for(request.GET.get("region"))})
 
 
 @_staff_required
@@ -112,8 +124,9 @@ def panel_bulk_status(request):
     status = request.POST.get("status")
     if brand_ids and status in Brand.Status.values:
         Brand.objects.filter(pk__in=brand_ids).update(status=status)
-    brands = Brand.objects.select_related("region").order_by("region__code", "name")
-    return render(request, "index/partials/panel_brands.html", {"brands": brands})
+    return render(
+        request, "index/partials/panel_brands.html", {"brands": _brands_for(request.POST.get("region"))}
+    )
 
 
 @_staff_required
@@ -172,14 +185,16 @@ def panel_trigger(request, kind: str):
     return render(
         request,
         "index/partials/panel_logs.html",
-        {"entries": _log_feed_entries(), "trigger_error": error, "trigger_message": message},
+        {"entries": _log_feed_entries(region_code), "trigger_error": error, "trigger_message": message},
     )
 
 
 @_staff_required
 @require_GET
 def panel_logs(request):
-    return render(request, "index/partials/panel_logs.html", {"entries": _log_feed_entries()})
+    return render(
+        request, "index/partials/panel_logs.html", {"entries": _log_feed_entries(request.GET.get("region"))}
+    )
 
 
 @_staff_required
@@ -196,22 +211,23 @@ def panel_status(request):
     )
 
 
-def _log_feed_entries() -> list[dict]:
-    scrape_events = (
-        ScrapeLog.objects.select_related("brand")
-        .order_by("-executed_at")[:LOG_FEED_SIZE]
-        .values("executed_at", "status", "extraction_mode", "games_found", "error_message", "brand__name")
+def _log_feed_entries(region_code: str | None = None) -> list[dict]:
+    scrape_events = ScrapeLog.objects.select_related("brand")
+    discovery_events = BrandDiscoveryLog.objects.select_related("source")
+    network_events = NetworkCaptureLog.objects.filter(used=True).select_related("brand")
+    if region_code:
+        scrape_events = scrape_events.filter(brand__region__code=region_code)
+        discovery_events = discovery_events.filter(source__region__code=region_code)
+        network_events = network_events.filter(brand__region__code=region_code)
+
+    scrape_events = scrape_events.order_by("-executed_at")[:LOG_FEED_SIZE].values(
+        "executed_at", "status", "extraction_mode", "games_found", "error_message", "brand__name"
     )
-    discovery_events = (
-        BrandDiscoveryLog.objects.select_related("source")
-        .order_by("-executed_at")[:LOG_FEED_SIZE]
-        .values("executed_at", "status", "candidates_found", "brands_created", "error_message", "source__name")
+    discovery_events = discovery_events.order_by("-executed_at")[:LOG_FEED_SIZE].values(
+        "executed_at", "status", "candidates_found", "brands_created", "error_message", "source__name"
     )
-    network_events = (
-        NetworkCaptureLog.objects.filter(used=True)
-        .select_related("brand")
-        .order_by("-captured_at")[:LOG_FEED_SIZE]
-        .values("captured_at", "brand__name", "url", "matched_pattern", "tile_count")
+    network_events = network_events.order_by("-captured_at")[:LOG_FEED_SIZE].values(
+        "captured_at", "brand__name", "url", "matched_pattern", "tile_count"
     )
 
     entries = []
@@ -249,9 +265,11 @@ def _log_feed_entries() -> list[dict]:
     return entries[:LOG_FEED_SIZE]
 
 
-def _review_form_context(**extra):
+def _review_form_context(region_code: str | None = None, **extra):
     return {
-        "items": _pending_review_items(),
+        "items": _pending_review_items(region_code),
+        "review_count": _review_count(region_code),
+        "region": region_code or "",
         "providers": Provider.objects.order_by("name"),
         "category_choices": Category.choices,
         "games": Game.objects.filter(is_active=True).select_related("provider").order_by("title"),
@@ -262,24 +280,22 @@ def _review_form_context(**extra):
 @_staff_required
 @require_GET
 def panel_review_queue(request):
-    return render(request, "index/partials/panel_review.html", _review_form_context())
+    return render(request, "index/partials/panel_review.html", _review_form_context(request.GET.get("region")))
 
 
-def _pending_review_items():
-    return (
-        UnmatchedTileReview.objects.filter(status=UnmatchedTileReview.Status.PENDING)
-        .select_related("brand", "best_guess")
-        .order_by("-seen_at")[:100]
-    )
+def _pending_review_qs(region_code: str | None = None):
+    qs = UnmatchedTileReview.objects.filter(status=UnmatchedTileReview.Status.PENDING)
+    if region_code:
+        qs = qs.filter(brand__region__code=region_code)
+    return qs
 
 
-def _unique_game_slug(title: str) -> str:
-    base_slug = slugify(title) or "game"
-    slug, n = base_slug, 1
-    while Game.objects.filter(slug=slug).exists():
-        n += 1
-        slug = f"{base_slug}-{n}"
-    return slug
+def _pending_review_items(region_code: str | None = None):
+    return _pending_review_qs(region_code).select_related("brand", "best_guess").order_by("-seen_at")[:100]
+
+
+def _review_count(region_code: str | None = None) -> int:
+    return _pending_review_qs(region_code).count()
 
 
 def _backfill_placement(item: UnmatchedTileReview, game: Game) -> None:
@@ -330,20 +346,22 @@ def panel_review_resolve(request, pk: int):
             item.resolved_game = game
             _backfill_placement(item, game)
     elif action == "new_game":
-        provider_id = request.POST.get("provider_id")
+        provider_name = (request.POST.get("provider_name") or "").strip()
         category = request.POST.get("category")
-        if provider_id and category in Category.values:
-            provider = get_object_or_404(Provider, pk=provider_id)
+        if provider_name and category in Category.values:
+            # Re-typing an existing provider's name links to it instead of
+            # creating a duplicate - one provider legitimately has many games.
+            provider = get_or_create_provider(provider_name)
             title = item.raw_label.strip()
             game = Game.objects.create(
-                title=title, slug=_unique_game_slug(title), provider=provider, category=category,
+                title=title, slug=unique_slug(Game, title, fallback="game"), provider=provider, category=category,
             )
             GameAlias.objects.get_or_create(game=game, text=item.raw_label)
             item.status = UnmatchedTileReview.Status.NEW_GAME
             item.resolved_game = game
             _backfill_placement(item, game)
         else:
-            error = f'Pick a category and a provider for "{item.raw_label}" before marking it as a new game.'
+            error = f'Enter a category and a provider name for "{item.raw_label}" before marking it as a new game.'
     else:
         item.status = UnmatchedTileReview.Status.REJECTED
 
@@ -352,4 +370,8 @@ def panel_review_resolve(request, pk: int):
         item.reviewed_at = timezone.now()
         item.save(update_fields=["status", "resolved_game", "reviewed_by", "reviewed_at"])
 
-    return render(request, "index/partials/panel_review.html", _review_form_context(resolve_error=error))
+    return render(
+        request,
+        "index/partials/panel_review.html",
+        _review_form_context(request.POST.get("region"), resolve_error=error),
+    )

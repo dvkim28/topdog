@@ -1,20 +1,27 @@
 {% comment %}Returned by GET /panel/review/ and POST .../resolve/, polled every 15s.{% endcomment %}
+{# Keeps the pending count in the section header in sync with the current market filter, even though that span lives outside this partial. #}
+<span id="review-count" hx-swap-oob="true" class="text-xs text-slate-500">{{ review_count }} pending</span>
 {% if resolve_error %}
   <div class="mb-2 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300">
     {{ resolve_error }}
   </div>
 {% endif %}
+<datalist id="known-providers">
+  {% for p in providers %}<option value="{{ p.name }}">{% endfor %}
+</datalist>
 <div class="max-h-[28rem] space-y-2 overflow-y-auto">
   {% for item in items %}
     <form hx-post="{% url 'panel-review-resolve' item.pk %}" hx-target="#review-queue" hx-swap="innerHTML"
+          hx-include="#market-filter"
           class="rounded-xl border border-slate-800 bg-slate-900/40 p-3">
       {% csrf_token %}
       <div class="flex items-start justify-between gap-3">
         <div class="min-w-0">
           <p class="truncate text-sm font-medium text-slate-100">{{ item.raw_label }}</p>
           <p class="text-[11px] text-slate-500">
-            {{ item.brand.name }} · {{ item.get_placement_display }} · fuzzy {{ item.best_score|floatformat:2 }}
-            {% if item.ai_suggested_new %}<span class="text-violet-400">· Claude: possible new game</span>{% endif %}
+            {{ item.brand.name }} · {{ item.get_placement_display }} ·
+            <span title="String-similarity score (0-1) against the closest existing catalog title. Below 0.6 means nothing close was found; this is why it needs a human.">fuzzy {{ item.best_score|floatformat:2 }}</span>
+            {% if item.ai_suggested_new %}<span class="text-violet-400" title="Claude read this title and judged it's not a match for anything in the candidate list">· Claude: possible new game</span>{% endif %}
           </p>
         </div>
       </div>
@@ -58,16 +65,16 @@
                     class="w-full rounded-md border border-slate-700 bg-slate-950 px-2 py-1 text-[11px] text-slate-300 focus:border-violet-500/50 focus:outline-none">
               <option value="">Category…</option>
               {% for value, label in category_choices %}
-                <option value="{{ value }}">{{ label }}</option>
+                <option value="{{ value }}" {% if value == item.ai_suggested_category %}selected{% endif %}>{{ label }}</option>
               {% endfor %}
             </select>
-            <select name="provider_id"
-                    class="w-full rounded-md border border-slate-700 bg-slate-950 px-2 py-1 text-[11px] text-slate-300 focus:border-violet-500/50 focus:outline-none">
-              <option value="">Provider…</option>
-              {% for p in providers %}
-                <option value="{{ p.pk }}">{{ p.name }}</option>
-              {% endfor %}
-            </select>
+            <input type="text" name="provider_name" list="known-providers" autocomplete="off"
+                   value="{{ item.ai_suggested_provider }}" placeholder="Provider name…"
+                   class="w-full rounded-md border border-slate-700 bg-slate-950 px-2 py-1 text-[11px] text-slate-300 focus:border-violet-500/50 focus:outline-none">
+            <p class="text-[10px] text-slate-600">
+              Matches an existing provider by name (case-insensitive) instead of creating a duplicate.
+              {% if item.ai_suggested_provider or item.ai_suggested_category %}Prefilled automatically (read off the page when possible, otherwise Claude's best guess) - check it before approving.{% endif %}
+            </p>
           </div>
           <button type="submit" name="action" value="new_game"
                   class="mt-2 w-full rounded-md bg-violet-500/15 px-2.5 py-1 text-[11px] font-medium text-violet-300 ring-1 ring-inset ring-violet-500/30 hover:bg-violet-500/25">

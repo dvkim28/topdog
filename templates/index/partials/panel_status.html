@@ -2,10 +2,10 @@
 <div class="mb-3 flex items-center gap-2 text-xs">
   {% if worker_online %}
     <span class="h-2 w-2 rounded-full bg-emerald-400"></span>
-    <span class="text-slate-400">Celery worker connected - queued runs will execute.</span>
+    <span class="text-slate-400" title="The Celery worker is the background process that actually runs scrapes and discovery jobs you queue here">Celery worker connected - queued runs will execute.</span>
   {% else %}
     <span class="h-2 w-2 rounded-full bg-rose-500"></span>
-    <span class="text-rose-300">No Celery worker detected. Runs will queue but sit idle until one starts.</span>
+    <span class="text-rose-300" title="The Celery worker is the background process that actually runs scrapes and discovery jobs you queue here">No Celery worker detected. Runs will queue but sit idle until one starts.</span>
   {% endif %}
 </div>
 

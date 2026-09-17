@@ -1,0 +1,39 @@
+{% load static %}<!doctype html>
+<html lang="en" class="h-full">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Contact · TopDog</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="min-h-full bg-slate-950 text-slate-300 antialiased">
+
+{% include "index/partials/site_header.html" %}
+
+<main class="mx-auto max-w-3xl px-4 py-16 sm:px-6 lg:py-24">
+  <span class="inline-flex items-center gap-1.5 rounded-full bg-violet-400/10 px-3 py-1 text-xs font-medium text-violet-300 ring-1 ring-inset ring-violet-400/25">
+    Contact
+  </span>
+  <h1 class="mt-5 text-3xl font-semibold leading-tight tracking-tight text-slate-50 sm:text-4xl">
+    Get in touch.
+  </h1>
+  <p class="mt-5 max-w-xl text-sm leading-relaxed text-slate-400">
+    Questions about the methodology, data corrections, or partnership inquiries - reach out and we'll get
+    back to you.
+  </p>
+
+  <div class="mt-10 rounded-xl border border-slate-800 bg-slate-900/60 p-6">
+    <p class="text-xs uppercase tracking-wide text-slate-500">Email</p>
+    <a href="mailto:contact@yourdomain.com" class="mt-1 block text-lg font-medium text-emerald-300 hover:text-emerald-200">
+      contact@yourdomain.com
+    </a>
+    <p class="mt-4 text-xs text-slate-500">
+      Placeholder address - swap this (and the mailto link) for your real contact details before this page
+      goes live.
+    </p>
+  </div>
+</main>
+
+{% include "index/partials/site_footer.html" %}
+</body>
+</html>

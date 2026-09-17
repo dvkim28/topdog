@@ -1,10 +1,10 @@
 {% comment %}Expanded row: which operators featured this title inside the window.{% endcomment %}
 <div class="px-4 py-4">
   <div class="flex flex-wrap items-center gap-x-6 gap-y-2 text-xs text-slate-400">
-    <span>Frequency score <span class="ml-1 tabular-nums font-semibold text-emerald-300">{{ row.frequency_score }}</span></span>
-    <span>Avg. visibility score <span class="ml-1 tabular-nums font-semibold text-violet-300">{{ row.visibility_score }}</span></span>
-    <span>Seen on <span class="tabular-nums font-semibold text-slate-200">{{ row.days_featured }}</span> of {{ window.days }} days ({{ row.consistency }}%)</span>
-    <span>Hero placements <span class="tabular-nums font-semibold text-slate-200">{{ row.hero_count }}</span></span>
+    <span title="This title's Points score: 45% operator coverage, 30% consistency, 25% placement quality, out of 100">Points <span class="ml-1 tabular-nums font-semibold text-emerald-300">{{ row.frequency_score }}</span></span>
+    <span title="Average positional score per tile seen (a hero-carousel slot near the top scores far higher than a low grid position)">Avg. visibility score <span class="ml-1 tabular-nums font-semibold text-violet-300">{{ row.visibility_score }}</span></span>
+    <span title="Distinct days in the period this title appeared on at least one homepage, as a share of the period">Seen on <span class="tabular-nums font-semibold text-slate-200">{{ row.days_featured }}</span> of {{ window.days }} days ({{ row.consistency }}%)</span>
+    <span title="Number of times this title appeared in a homepage's hero carousel - the most valuable placement">Hero placements <span class="tabular-nums font-semibold text-slate-200">{{ row.hero_count }}</span></span>
     {% if row.previous_rank %}
       <span>Previous period rank <span class="tabular-nums font-semibold text-slate-200">#{{ row.previous_rank }}</span></span>
     {% else %}

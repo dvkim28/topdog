@@ -8,7 +8,9 @@ break every time a class name changes. `scrape_brand()` opens the homepage
 (and live-casino page, if configured) in a headless browser, listens on
 `page.on("response")` for a matching JSON payload for up to
 `NETWORK_SNIFF_TIMEOUT` seconds, and only falls back to DOM extraction (AI or
-CSS, on the same already-rendered page) if nothing usable showed up in time.
+CSS) if nothing usable showed up in time - using each URL's own hydrated
+HTML, captured while it was open, so a homepage + separate live-casino page
+both feed the fallback instead of only whichever page was visited last.
 
 Every response checked against the URL patterns is recorded as a
 `NetworkCaptureLogEntry`, matched or not, so the admin log viewer and
@@ -17,15 +19,20 @@ Every response checked against the URL patterns is recorded as a
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from dataclasses import dataclass, field
 
 from django.conf import settings
 
-from index.models import ExtractionMode, Placement
+from index.models import Brand, ExtractionMode
+from index.scraping.ai_client import AIExtractionError, clean_html
+from index.scraping.diffing import hash_content
 from index.scraping.extractor import Tile
 from index.scraping.fetcher import RobotsDisallowed
+from index.scraping.json_extract import extract_embedded_json_tiles
+from index.scraping.json_payload import tiles_from_json
 from index.scraping.robots import crawl_allowed, crawl_delay
 
 logger = logging.getLogger(__name__)
@@ -34,11 +41,6 @@ NETWORK_SNIFF_TIMEOUT = float(getattr(settings, "CRAWLER", {}).get("NETWORK_SNIF
 NETWORK_URL_PATTERNS = getattr(
     settings, "CRAWLER", {}
 ).get("NETWORK_URL_PATTERNS", ["/games", "/lobby", "/tiles", "/api/casino", "/casino/api"])
-
-# Keys a JSON object needs at least one of to plausibly be "a game", and keys
-# that identify the array of such objects inside an arbitrarily-shaped payload.
-_TITLE_KEYS = ("title", "name", "gameName", "game_name", "label")
-_LIST_KEYS = ("games", "items", "tiles", "results", "data", "lobby", "list")
 
 
 @dataclass
@@ -55,6 +57,11 @@ class ScrapeOutcome:
     tiles: list[Tile]
     extraction_mode: str
     network_logs: list[NetworkCaptureLogEntry] = field(default_factory=list)
+    content_hash: str = ""
+    # True when this brand's content hashed identical to Brand.content_hash -
+    # the caller should skip matching/AI/DB-write entirely and replay
+    # Brand.latest_snapshot instead. `tiles` is always [] when this is True.
+    unchanged: bool = False
 
 
 def _matched_pattern(url: str) -> str:
@@ -64,67 +71,13 @@ def _matched_pattern(url: str) -> str:
     return ""
 
 
-def _find_tile_array(payload) -> list | None:
-    """Depth-limited search for the array of game-like dicts inside a payload
-    of unknown shape. Handles both a bare array and `{"data": {"games": [...]}}`
-    style envelopes.
+def _canonical_tiles(tiles: list[Tile]) -> str:
+    """Stable string form of a tile list, for hashing. Sorted so that the
+    network sniffer folding responses in from multiple in-flight requests
+    doesn't produce a different hash purely from response-arrival order.
     """
-    if isinstance(payload, list):
-        if payload and isinstance(payload[0], dict) and any(k in payload[0] for k in _TITLE_KEYS):
-            return payload
-        return None
-    if not isinstance(payload, dict):
-        return None
-    for key in _LIST_KEYS:
-        value = payload.get(key)
-        found = _find_tile_array(value) if isinstance(value, (list, dict)) else None
-        if found:
-            return found
-    # One level deeper, for envelopes like {"data": {"payload": {...}}}
-    for value in payload.values():
-        if isinstance(value, dict):
-            found = _find_tile_array(value)
-            if found:
-                return found
-    return None
-
-
-def _guess_placement(url: str, payload_key_hint: str) -> str:
-    haystack = f"{url} {payload_key_hint}".lower()
-    if "hero" in haystack or "banner" in haystack or "carousel" in haystack:
-        return Placement.HERO
-    if "live" in haystack:
-        return Placement.LIVE_SECTION
-    if "top" in haystack or "popular" in haystack or "featured" in haystack or "grid" in haystack:
-        return Placement.GRID
-    return Placement.OTHER
-
-
-def _tiles_from_json(url: str, payload) -> list[Tile]:
-    array = _find_tile_array(payload)
-    if not array:
-        return []
-    placement = _guess_placement(url, "")
-    tiles = []
-    for position, item in enumerate(array):
-        if not isinstance(item, dict):
-            continue
-        label = next((str(item[k]).strip() for k in _TITLE_KEYS if item.get(k)), "")
-        if not label:
-            continue
-        row = item.get("row") or item.get("rowIndex")
-        column = item.get("column") or item.get("col") or item.get("columnIndex")
-        item_placement = item.get("section") or item.get("placement")
-        tiles.append(
-            Tile(
-                raw_label=label[:200],
-                placement=_guess_placement(url, str(item_placement or "")) if item_placement else placement,
-                position=position,
-                row=int(row) if row else None,
-                column=int(column) if column else None,
-            )
-        )
-    return tiles
+    rows = sorted((t.placement, t.raw_label.lower(), t.position) for t in tiles)
+    return json.dumps(rows)
 
 
 def _autoscroll(page, max_scrolls: int = 8, pause_ms: int = 400) -> None:
@@ -146,15 +99,25 @@ def _autoscroll(page, max_scrolls: int = 8, pause_ms: int = 400) -> None:
         last_height = height
 
 
-def _sniff_network(page, urls: list[str], network_logs: list[NetworkCaptureLogEntry]) -> list[Tile]:
+def _sniff_network(
+    page, urls: list[str], network_logs: list[NetworkCaptureLogEntry]
+) -> tuple[list[Tile], dict[str, str]]:
     """Navigate to each URL, listening for every matching JSON response, and
     merge tiles across all of them (deduped by placement + label).
 
     A lobby that paginates its API as you scroll fires several matching
     responses in one visit; taking only the first would silently drop
     everything after page one, so every usable payload is folded in.
+
+    Also returns each URL's fully-hydrated HTML (post-scroll), captured right
+    after that URL is visited - not just whichever page happens to still be
+    loaded once the whole loop finishes. The DOM fallback needs both the
+    homepage and the live-casino page's markup when they're separate URLs;
+    grabbing `page.content()` only once after the loop silently threw away
+    the homepage's content in favor of whatever URL was visited last.
     """
     tiles_by_key: dict[tuple[str, str], Tile] = {}
+    htmls: dict[str, str] = {}
 
     def on_response(response):
         pattern = _matched_pattern(response.url)
@@ -166,7 +129,7 @@ def _sniff_network(page, urls: list[str], network_logs: list[NetworkCaptureLogEn
             payload = response.json()
         except Exception:  # noqa: BLE001 - not every matching URL is parseable JSON
             return
-        tiles = _tiles_from_json(response.url, payload)
+        tiles = tiles_from_json(response.url, payload)
         entry.tile_count = len(tiles)
         if not tiles:
             return
@@ -180,16 +143,24 @@ def _sniff_network(page, urls: list[str], network_logs: list[NetworkCaptureLogEn
     page.on("response", on_response)
     try:
         for url in urls:
-            page.goto(url, wait_until="networkidle", timeout=int(NETWORK_SNIFF_TIMEOUT * 1000) + 5000)
+            # "networkidle" here would mean the goto itself blocks until the
+            # page goes quiet - on any page with a chat widget, analytics
+            # beacon, or websocket that keeps polling forever, that condition
+            # never fires and the whole scrape times out (seen live on
+            # betinia.es). The explicit wait_for_timeout below is what
+            # actually listens for the lobby JSON, so goto only needs the DOM
+            # parsed, not the network idle.
+            page.goto(url, wait_until="domcontentloaded", timeout=int(NETWORK_SNIFF_TIMEOUT * 1000) + 5000)
             page.wait_for_timeout(NETWORK_SNIFF_TIMEOUT * 1000)
             # Scrolling both mounts lazy DOM content (used later if the sniff
             # comes up empty) and gives infinite-scroll lobbies a chance to
             # fire the next page of the API this loop is listening for.
             _autoscroll(page)
+            htmls[url] = page.content()
     finally:
         page.remove_listener("response", on_response)
 
-    return list(tiles_by_key.values())
+    return list(tiles_by_key.values()), htmls
 
 
 # Only the DOM/JSON matters here - stylesheets, images and fonts add load
@@ -205,19 +176,92 @@ def _block_heavy_assets(route):
         route.continue_()
 
 
-def _dom_fallback(brand, page, html: str) -> tuple[list[Tile], str]:
-    if brand.use_ai_extraction and settings.AI["ENABLED"]:
-        from index.scraping.ai_extract import extract_tiles_ai
+def _merge_unique(tiles: list[Tile], more: list[Tile]) -> list[Tile]:
+    """Append `more` onto `tiles`, skipping anything already present under
+    the same (placement, label) key - used to fold a separate live-casino
+    page's tiles in after the lobby's, whichever extraction method produced
+    both lists.
+    """
+    seen = {(t.placement, t.raw_label.lower()) for t in tiles}
+    for tile in more:
+        key = (tile.placement, tile.raw_label.lower())
+        if key not in seen:
+            seen.add(key)
+            tiles.append(tile)
+    return tiles
 
-        return extract_tiles_ai({"lobby": html}), ExtractionMode.DOM_AI
+
+def _self_heal_selectors(brand, html: str) -> None:
+    """After a full AI extraction succeeds where the stored CSS selectors
+    found nothing, ask the cheap model once for updated selectors and save
+    them - so the *next* run can go back to the free CSS path (priority 2)
+    instead of paying for full-page AI extraction (priority 3) every time.
+
+    Best-effort only: this run's extraction already succeeded via AI above,
+    so a failure here just means the next run tries AI again too - it never
+    turns a working scrape into a failed one.
+    """
+    from index.scraping.ai_extract import suggest_selectors_ai
+
+    try:
+        new_selectors = suggest_selectors_ai(html)
+    except AIExtractionError as exc:
+        logger.warning("%s: selector self-heal failed, will retry AI extraction next run: %s", brand, exc)
+        return
+    if new_selectors:
+        Brand.objects.filter(pk=brand.pk).update(selectors=new_selectors)
+        logger.info("%s: learned new CSS selectors %s", brand, new_selectors)
+
+
+def _dom_fallback(brand, htmls: dict[str, str]) -> tuple[list[Tile], str]:
+    """Three-stage hybrid, cheapest first:
+
+    1. Embedded structured JSON (ld+json / __NEXT_DATA__ / __INITIAL_STATE__) -
+       free, and needs no selectors at all.
+    2. Stored CSS selectors, parsed locally - free, 0 AI tokens.
+    3. Full AI extraction, only if 1 and 2 both found nothing and the brand
+       allows it - and only ever a single one-off call, since a successful
+       AI pass immediately triggers `_self_heal_selectors` so the *next* run
+       can go back to step 2.
+    """
+    lobby_html = htmls.get(brand.homepage_url, "")
+    live_html = htmls.get(brand.live_casino_url, "") if brand.live_casino_url else ""
+    has_separate_live_page = bool(live_html and live_html != lobby_html)
+
+    tiles = extract_embedded_json_tiles(lobby_html)
+    if has_separate_live_page:
+        tiles = _merge_unique(tiles, extract_embedded_json_tiles(live_html))
+    if tiles:
+        return tiles, ExtractionMode.DOM_JSON
+
     from index.scraping.extractor import extract_tiles
 
-    return extract_tiles(html, brand.selectors), ExtractionMode.DOM_CSS
+    tiles = extract_tiles(lobby_html, brand.selectors)
+    if has_separate_live_page:
+        # A separate live-casino page's markup might match the live_section
+        # selector even though it wasn't present in the lobby page's DOM.
+        tiles = _merge_unique(tiles, extract_tiles(live_html, brand.selectors))
+    if tiles:
+        return tiles, ExtractionMode.DOM_CSS
+
+    if not (brand.use_ai_extraction and settings.AI["ENABLED"]):
+        return [], ExtractionMode.DOM_CSS
+
+    from index.scraping.ai_extract import extract_tiles_ai
+
+    pages = {"lobby": lobby_html}
+    if live_html:
+        pages["live"] = live_html
+    tiles = extract_tiles_ai(pages)
+    if tiles:
+        _self_heal_selectors(brand, lobby_html)
+    return tiles, ExtractionMode.DOM_AI
 
 
 def scrape_brand(brand) -> ScrapeOutcome:
-    """Sniff network JSON first; fall back to DOM extraction on the same
-    rendered page if nothing usable was captured within the sniff window.
+    """Sniff network JSON first; fall back to DOM extraction (using every
+    URL's own hydrated HTML, not just whichever page loaded last) if nothing
+    usable was captured within the sniff window.
     """
     from playwright.sync_api import sync_playwright  # imported lazily: only needed in live mode
 
@@ -236,13 +280,40 @@ def scrape_brand(brand) -> ScrapeOutcome:
         try:
             page = browser.new_page(user_agent=settings.CRAWLER["USER_AGENT"])
             page.route("**/*", _block_heavy_assets)
-            tiles = _sniff_network(page, urls, network_logs)
+            tiles, htmls = _sniff_network(page, urls, network_logs)
             if tiles:
-                return ScrapeOutcome(tiles=tiles, extraction_mode=ExtractionMode.NETWORK_API, network_logs=network_logs)
+                # Step 1 (network path): hash the sniffed tiles themselves -
+                # already free to compute, and a cleaner "did the merchandised
+                # games actually change" signal than the raw JSON bytes would
+                # be (session ids / cache-busting params churn every request).
+                content_hash = hash_content(_canonical_tiles(tiles))
+                if content_hash == brand.content_hash:
+                    return ScrapeOutcome(
+                        tiles=[], extraction_mode=ExtractionMode.UNCHANGED, network_logs=network_logs,
+                        content_hash=content_hash, unchanged=True,
+                    )
+                return ScrapeOutcome(
+                    tiles=tiles, extraction_mode=ExtractionMode.NETWORK_API, network_logs=network_logs,
+                    content_hash=content_hash,
+                )
 
             logger.info("%s: no usable network JSON within %ss, falling back to DOM", brand, NETWORK_SNIFF_TIMEOUT)
-            html = page.content()
-            tiles, mode = _dom_fallback(brand, page, html)
-            return ScrapeOutcome(tiles=tiles, extraction_mode=mode, network_logs=network_logs)
+
+            # Step 1 (DOM path): hash the cleaned HTML *before* running any
+            # extraction at all (embedded JSON, then CSS, then AI) - if it's
+            # byte-for-byte the same shape as the last successful run, every
+            # one of those stages (and the Tier 1/2 matching and DB write
+            # that would follow) is skipped outright.
+            lobby_html = htmls.get(brand.homepage_url, "")
+            live_html = htmls.get(brand.live_casino_url, "") if brand.live_casino_url else ""
+            content_hash = hash_content(clean_html(lobby_html + live_html))
+            if content_hash == brand.content_hash:
+                return ScrapeOutcome(
+                    tiles=[], extraction_mode=ExtractionMode.UNCHANGED, network_logs=network_logs,
+                    content_hash=content_hash, unchanged=True,
+                )
+
+            tiles, mode = _dom_fallback(brand, htmls)
+            return ScrapeOutcome(tiles=tiles, extraction_mode=mode, network_logs=network_logs, content_hash=content_hash)
         finally:
             browser.close()

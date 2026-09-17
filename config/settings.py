@@ -118,6 +118,16 @@ CORS_ALLOWED_ORIGINS = os.environ.get(
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 CELERY_BROKER_URL = REDIS_URL
 CELERY_RESULT_BACKEND = "django-db"
+
+# Separate DB index from the Celery broker above, same Redis instance. Used
+# to dedupe Tier 2 AI matcher calls across brands within a scrape run - see
+# index/services/normalization.py.
+CACHES = {
+    "default": {
+        "BACKEND": "django.core.cache.backends.redis.RedisCache",
+        "LOCATION": os.environ.get("REDIS_CACHE_URL") or urlparse(REDIS_URL)._replace(path="/1").geturl(),
+    }
+}
 CELERY_TASK_TIME_LIMIT = 60 * 20
 CELERY_TASK_SOFT_TIME_LIMIT = 60 * 18
 CELERY_TASK_ACKS_LATE = True
@@ -151,11 +161,28 @@ AI = {
     "API_KEY": os.environ.get("ANTHROPIC_API_KEY", ""),
     "ENABLED": bool(os.environ.get("ANTHROPIC_API_KEY")),
     "MODEL": os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-5"),
-    "MAX_TOKENS": int(os.environ.get("AI_MAX_TOKENS", 4096)),
+    # Tier 2 title matching (services/normalization.py) is a small structured
+    # classification task, not open-ended HTML extraction, so it defaults to
+    # a cheaper model than full-page extraction does.
+    "MATCH_MODEL": os.environ.get("ANTHROPIC_MATCH_MODEL", "claude-haiku-4-5"),
+    # Non-streaming requests stay well under SDK HTTP timeouts up to ~16k;
+    # a large lobby's tile list alone can run several thousand tokens, and
+    # this is a ceiling, not a spend - raising it costs nothing unless the
+    # model actually needs it. Measured live on leovegas.es (a large,
+    # 280+-game lobby): the old 8192 cap was fine for output length, but the
+    # HTML cap below was cutting a quarter of the games before extraction
+    # ever ran - raised together so a big lobby's full tile list both fits
+    # in the input and isn't silently cut off mid-array in the output.
+    "MAX_TOKENS": int(os.environ.get("AI_MAX_TOKENS", 16000)),
     # Casino lobbies are markup-heavy; 60k chars routinely cut off before the
-    # game grid on a long homepage, silently dropping tiles. 150k covers a
-    # realistic lobby end-to-end while staying well inside the model's context.
-    "MAX_HTML_CHARS": int(os.environ.get("AI_MAX_HTML_CHARS", 150000)),
+    # game grid on a long homepage, silently dropping tiles. Measured live on
+    # leovegas.es: its cleaned lobby page alone was 224k chars, and the old
+    # 150k cap here silently dropped 65 of its 284 games before the AI
+    # extractor (or a human) ever saw them - raised with headroom above that.
+    # This is still just the AI-extraction fallback path's limit: the CSS
+    # selector and embedded-JSON paths (services/scraper.py) parse the full,
+    # uncapped DOM and aren't affected by this at all.
+    "MAX_HTML_CHARS": int(os.environ.get("AI_MAX_HTML_CHARS", 350000)),
 }
 
 LOGGING = {

@@ -15,20 +15,23 @@ block can be swapped in one go.
 
 <div class="overflow-hidden rounded-xl border border-slate-800 bg-slate-900/40">
 
-  <div class="hidden grid-cols-[3rem_minmax(0,2.4fr)_minmax(0,1.1fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.2fr)] gap-4 border-b border-slate-800 bg-slate-900/70 px-4 py-3 text-xs text-slate-500 lg:grid">
+  <div class="hidden grid-cols-[3rem_minmax(0,2.1fr)_minmax(0,1fr)_minmax(0,0.9fr)_minmax(0,0.8fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.1fr)] gap-4 border-b border-slate-800 bg-slate-900/70 px-4 py-3 text-xs text-slate-500 lg:grid">
     <span>Rank</span>
     <span>Game</span>
     <span>Provider</span>
     <span>Category</span>
+    <span class="inline-flex items-center gap-1" title="Composite visibility score, 0-100: 45% how many operators feature it, 30% day-to-day consistency, 25% placement quality (hero beats grid beats live/other).">
+      Points <span class="text-slate-600">ⓘ</span>
+    </span>
     <span title="Distinct days in the selected period on which this title appeared on at least one homepage">Days featured</span>
     <span title="Highest number of operators featuring this title on a single day in the period">Peak brands</span>
-    <span>GEO coverage</span>
+    <span title="Regulated markets (by country/region code) where this title has been seen">GEO coverage</span>
   </div>
 
   {% for row in rows %}
     <div class="border-t border-slate-800/70 first:border-t-0">
       <button type="button"
-              class="grid w-full grid-cols-1 gap-y-2 gap-x-4 px-4 py-3 text-left transition-colors hover:bg-slate-800/25 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-emerald-400 lg:grid-cols-[3rem_minmax(0,2.4fr)_minmax(0,1.1fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.2fr)] lg:items-center"
+              class="grid w-full grid-cols-1 gap-y-2 gap-x-4 px-4 py-3 text-left transition-colors hover:bg-slate-800/25 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-emerald-400 lg:grid-cols-[3rem_minmax(0,2.1fr)_minmax(0,1fr)_minmax(0,0.9fr)_minmax(0,0.8fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.1fr)] lg:items-center"
               hx-get="{% url 'partial-game-detail' row.slug %}"
               hx-include="#filters"
               hx-target="#detail-{{ row.slug }}"
@@ -50,7 +53,7 @@ block can be swapped in one go.
 
         <span class="min-w-0">
           <span class="block truncate text-sm font-medium text-slate-100">{{ row.title }}</span>
-          <span class="mt-0.5 block text-[11px] text-slate-500 lg:hidden">{{ row.provider }} · {{ row.category_label }}</span>
+          <span class="mt-0.5 block text-[11px] text-slate-500 lg:hidden">{{ row.provider }} · {{ row.category_label }} · {{ row.frequency_score }} pts</span>
         </span>
 
         <span class="hidden lg:block">
@@ -58,6 +61,16 @@ block can be swapped in one go.
         </span>
 
         <span class="hidden text-xs text-slate-400 lg:block">{{ row.category_label }}</span>
+
+        <span class="hidden lg:block">
+          <span class="inline-flex items-center gap-1.5 rounded-md px-2 py-0.5 text-xs font-semibold tabular-nums ring-1 ring-inset
+            {% if row.frequency_score >= 70 %}bg-emerald-400/10 text-emerald-300 ring-emerald-400/25
+            {% elif row.frequency_score >= 40 %}bg-amber-400/10 text-amber-300 ring-amber-400/25
+            {% else %}bg-slate-800 text-slate-400 ring-slate-700{% endif %}"
+            title="Composite visibility score, 0-100: 45% operator coverage, 30% consistency, 25% placement quality.">
+            {{ row.frequency_score }}<span class="font-normal opacity-60">/100</span>
+          </span>
+        </span>
 
         <span class="flex items-center gap-2">
           <span class="tabular-nums text-sm font-semibold text-emerald-300">{{ row.days_featured }}</span>

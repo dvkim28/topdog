@@ -2,13 +2,13 @@
 <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
 
   <div class="rounded-xl border border-slate-800 bg-slate-900/60 p-4">
-    <p class="text-xs text-slate-400">Operators tracked</p>
+    <p class="text-xs text-slate-400" title="Active licensed operators the crawler is scheduled to scan in the selected market">Operators tracked</p>
     <p class="mt-2 text-2xl font-semibold tabular-nums text-slate-50">{{ stats.brands_tracked }}</p>
     <p class="mt-1 text-xs text-slate-500">{{ stats.brands_with_data }} returned data in period</p>
   </div>
 
   <div class="rounded-xl border border-slate-800 bg-slate-900/60 p-4">
-    <p class="text-xs text-slate-400">Most featured title</p>
+    <p class="text-xs text-slate-400" title="The #1-ranked title in the table below for this window - highest Points score">Most featured title</p>
     {% if stats.top_game %}
       <p class="mt-2 truncate text-xl font-semibold tracking-tight text-slate-50">{{ stats.top_game.title }}</p>
       <p class="mt-1 text-xs text-slate-500">
@@ -21,16 +21,16 @@
   </div>
 
   <div class="rounded-xl border border-slate-800 bg-slate-900/60 p-4">
-    <p class="text-xs text-slate-400">Unique titles</p>
+    <p class="text-xs text-slate-400" title="Distinct game titles seen on any tracked homepage during this window">Unique titles</p>
     <p class="mt-2 text-2xl font-semibold tabular-nums text-slate-50">{{ stats.unique_titles }}</p>
     <p class="mt-1 text-xs text-slate-500">
-      <span class="text-emerald-400">{{ stats.risers }} rising</span> ·
-      <span class="text-violet-400">{{ stats.new_entries }} new</span>
+      <span class="text-emerald-400" title="Titles whose rank improved by more than one place vs. the previous equal-length period">{{ stats.risers }} rising</span> ·
+      <span class="text-violet-400" title="Titles that weren't ranked at all in the previous period">{{ stats.new_entries }} new</span>
     </p>
   </div>
 
   <div class="rounded-xl border border-slate-800 bg-slate-900/60 p-4">
-    <p class="text-xs text-slate-400">Avg games per homepage</p>
+    <p class="text-xs text-slate-400" title="Total homepage tiles seen, divided by (operators scanned × days scanned)">Avg games per homepage</p>
     <p class="mt-2 text-2xl font-semibold tabular-nums text-slate-50">{{ stats.avg_games_per_homepage }}</p>
     <p class="mt-1 text-xs text-slate-500">across {{ stats.scan_days }} scan day{{ stats.scan_days|pluralize }}</p>
   </div>

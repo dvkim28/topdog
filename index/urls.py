@@ -6,6 +6,8 @@ from .forms import EmailAuthenticationForm
 
 urlpatterns = [
     path("", views.landing, name="landing"),
+    path("about/", views.about, name="about"),
+    path("contact/", views.contact, name="contact"),
     path("dashboard/", views.dashboard, name="dashboard"),
     path("monitoring/", views.monitoring, name="monitoring"),
     path("partial/game-table/", views.partial_game_table, name="partial-game-table"),
@@ -23,6 +25,7 @@ urlpatterns = [
     path("logout/", auth_views.LogoutView.as_view(), name="logout"),
     # Admin execution panel
     path("panel/", panel_views.panel_home, name="panel-home"),
+    path("panel/brands/", panel_views.panel_brands, name="panel-brands"),
     path("panel/brands/bulk-status/", panel_views.panel_bulk_status, name="panel-bulk-status"),
     path("panel/trigger/<str:kind>/", panel_views.panel_trigger, name="panel-trigger"),
     path("panel/logs/", panel_views.panel_logs, name="panel-logs"),

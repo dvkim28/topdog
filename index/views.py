@@ -90,6 +90,16 @@ def landing(request):
     )
 
 
+@require_GET
+def about(request):
+    return render(request, "index/about.html")
+
+
+@require_GET
+def contact(request):
+    return render(request, "index/contact.html")
+
+
 @require_http_methods(["GET", "POST"])
 def register(request):
     if request.user.is_authenticated:

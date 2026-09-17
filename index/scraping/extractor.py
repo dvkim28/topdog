@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from bs4 import BeautifulSoup
@@ -15,6 +16,13 @@ DEFAULT_SELECTORS = {
 }
 
 TITLE_ATTRS = ("data-game-name", "data-title", "aria-label", "title", "alt")
+# Some sites' SPA components set aria-label to the tile's route path rather
+# than its display name (seen live on leovegas.es: aria-label="/juegos/
+# vegas-vault" on the <a> wrapping a tile whose nested <img alt="Vegas
+# Vault"> has the real title). A value shaped like a path or URL is never a
+# genuine game title, so it's rejected here and _label_from() falls through
+# to the next attribute / the nested <img> / the node's own text instead.
+_PATH_LIKE = re.compile(r"^/|://")
 
 
 @dataclass
@@ -24,18 +32,19 @@ class Tile:
     position: int
     row: int | None = None
     column: int | None = None
+    provider: str = ""
 
 
 def _label_from(node) -> str:
     for attr in TITLE_ATTRS:
         value = node.get(attr)
-        if value and value.strip():
+        if value and value.strip() and not _PATH_LIKE.match(value.strip()):
             return value.strip()
     img = node.find("img")
     if img:
         for attr in ("alt", "title"):
             value = img.get(attr)
-            if value and value.strip():
+            if value and value.strip() and not _PATH_LIKE.match(value.strip()):
                 return value.strip()
     text = node.get_text(" ", strip=True)
     return text[:200]

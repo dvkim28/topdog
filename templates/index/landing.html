@@ -5,103 +5,110 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>TopDog · Regulated Casino Homepage Visibility Index (MVI)</title>
   <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    @keyframes fade-up { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: translateY(0); } }
+    @keyframes blob-float {
+      0%, 100% { transform: translate(0, 0) scale(1); }
+      33% { transform: translate(24px, -28px) scale(1.06); }
+      66% { transform: translate(-18px, 18px) scale(0.96); }
+    }
+    .animate-fade-up { opacity: 0; animation: fade-up .7s ease-out forwards; }
+    .blob { position: absolute; border-radius: 9999px; filter: blur(70px); opacity: .35; animation: blob-float 16s ease-in-out infinite; pointer-events: none; }
+    .reveal { opacity: 0; transform: translateY(18px); transition: opacity .6s ease-out, transform .6s ease-out; }
+    .reveal.is-visible { opacity: 1; transform: translateY(0); }
+    @media (prefers-reduced-motion: reduce) {
+      .animate-fade-up, .blob { animation: none !important; opacity: 1 !important; }
+      .reveal { opacity: 1 !important; transform: none !important; transition: none !important; }
+    }
+  </style>
 </head>
-<body class="min-h-full bg-slate-950 text-slate-300 antialiased">
+<body class="min-h-full w-full overflow-x-hidden bg-slate-950 text-slate-300 antialiased">
 
-<header class="sticky top-0 z-20 border-b border-slate-800/80 bg-slate-950/90 backdrop-blur">
-  <div class="mx-auto flex max-w-7xl items-center justify-between gap-4 px-4 py-3 sm:px-6">
-    <div class="flex items-center gap-2.5">
-      <span class="h-7 w-7 rounded-md bg-emerald-500/15 ring-1 ring-inset ring-emerald-500/30 grid place-items-center">
-        <span class="h-2 w-2 rounded-full bg-emerald-400"></span>
-      </span>
-      <span class="text-sm font-semibold tracking-tight text-slate-100">TopDog</span>
-    </div>
-    <nav class="flex items-center gap-4 text-xs">
-      <a href="{% url 'dashboard' %}" class="text-slate-400 hover:text-slate-200">Dashboard</a>
-      {% if request.user.is_authenticated %}
-        {% if request.user.is_staff %}
-          <a href="{% url 'panel-home' %}" class="text-slate-400 hover:text-slate-200">Admin panel</a>
-        {% endif %}
-        <form method="post" action="{% url 'logout' %}" class="inline">
-          {% csrf_token %}
-          <button type="submit" class="text-slate-400 hover:text-slate-200">Log out</button>
-        </form>
-      {% else %}
-        <a href="{% url 'login' %}" class="text-slate-400 hover:text-slate-200">Log in</a>
-        <a href="{% url 'register' %}"
-           class="rounded-md bg-emerald-500/15 px-3 py-1.5 font-medium text-emerald-300 ring-1 ring-inset ring-emerald-500/30 hover:bg-emerald-500/25">
-          Register
-        </a>
-      {% endif %}
-    </nav>
-  </div>
-</header>
+{% include "index/partials/site_header.html" %}
 
-<main class="mx-auto max-w-7xl px-4 sm:px-6">
-
-  <section class="py-16 lg:py-24">
+<!-- Full-bleed hero: the section itself spans the whole viewport so the
+     background blobs aren't boxed into the narrower centered content column;
+     the text inside still gets the same max-w-7xl + padding as everything
+     else via its own inner wrapper. -->
+<section class="relative w-full overflow-hidden">
+  <div class="blob -left-24 -top-24 h-72 w-72 bg-emerald-500"></div>
+  <div class="blob -right-16 top-10 h-80 w-80 bg-violet-500" style="animation-delay: -6s"></div>
+  <div class="relative mx-auto max-w-7xl px-4 py-16 sm:px-6 lg:py-24">
     <div class="max-w-3xl">
-      <span class="inline-flex items-center gap-1.5 rounded-full bg-violet-400/10 px-3 py-1 text-xs font-medium text-violet-300 ring-1 ring-inset ring-violet-400/25">
+      <span class="animate-fade-up inline-flex cursor-help items-center gap-1.5 rounded-full bg-violet-400/10 px-3 py-1 text-xs font-medium text-violet-300 ring-1 ring-inset ring-violet-400/25"
+            title="This site's composite 0-100 score for how prominently a game is merchandised across regulated operator homepages - see 'Points' in the table below.">
         Market Visibility Index (MVI)
       </span>
-      <h1 class="mt-5 text-4xl font-semibold leading-tight tracking-tight text-slate-50 sm:text-5xl">
+      <h1 class="animate-fade-up mt-5 text-4xl font-semibold leading-tight tracking-tight text-slate-50 sm:text-5xl" style="animation-delay: .08s">
         What licensed operators actually put on their homepage, measured nightly.
       </h1>
-      <p class="mt-5 max-w-xl text-base leading-relaxed text-slate-400">
+      <p class="animate-fade-up mt-5 max-w-xl text-base leading-relaxed text-slate-400" style="animation-delay: .16s">
         We sniff the same lobby and live-casino data regulated casino homepages load for their own players,
         score every tile by where it sits on the page, and turn that into a single, comparable visibility
         score per game, per operator, per regulated market.
       </p>
-      <div class="mt-8 flex flex-wrap items-center gap-3">
+      <div class="animate-fade-up mt-8 flex flex-wrap items-center gap-3" style="animation-delay: .24s">
         <a href="{% url 'dashboard' %}"
-           class="rounded-lg bg-emerald-500 px-4 py-2.5 text-sm font-semibold text-slate-950 hover:bg-emerald-400">
+           class="rounded-lg bg-emerald-500 px-4 py-2.5 text-sm font-semibold text-slate-950 transition hover:bg-emerald-400 hover:shadow-[0_0_20px_rgba(52,211,153,0.4)]">
           Explore the full index
         </a>
         {% if not request.user.is_authenticated %}
           <a href="{% url 'register' %}"
-             class="rounded-lg border border-slate-700 px-4 py-2.5 text-sm font-medium text-slate-200 hover:border-slate-600">
+             class="rounded-lg border border-slate-700 px-4 py-2.5 text-sm font-medium text-slate-200 transition hover:border-slate-600">
             Create a free account
           </a>
         {% endif %}
       </div>
     </div>
-  </section>
+  </div>
+</section>
+
+<main class="mx-auto w-full max-w-7xl px-4 sm:px-6">
 
   <!-- Stat strip -->
-  <section class="grid gap-3 pb-10 sm:grid-cols-3">
+  <section class="animate-fade-up grid gap-3 pb-10 sm:grid-cols-3" style="animation-delay: .3s">
     <div class="rounded-xl border border-slate-800 bg-slate-900/60 p-4">
-      <p class="text-xs text-slate-400">Operators tracked</p>
-      <p class="mt-2 text-2xl font-semibold tabular-nums text-slate-50">{{ stats.brands_tracked }}</p>
+      <p class="text-xs text-slate-400" title="Active licensed operators this index is scanning nightly">Operators tracked</p>
+      <p class="mt-2 text-2xl font-semibold tabular-nums text-slate-50" data-countup="{{ stats.brands_tracked }}">0</p>
     </div>
     <div class="rounded-xl border border-slate-800 bg-slate-900/60 p-4">
-      <p class="text-xs text-slate-400">Unique titles, last 7 days</p>
-      <p class="mt-2 text-2xl font-semibold tabular-nums text-slate-50">{{ stats.unique_titles }}</p>
+      <p class="text-xs text-slate-400" title="Distinct game titles seen on any tracked homepage in the last 7 days">Unique titles, last 7 days</p>
+      <p class="mt-2 text-2xl font-semibold tabular-nums text-slate-50" data-countup="{{ stats.unique_titles }}">0</p>
     </div>
     <div class="rounded-xl border border-slate-800 bg-slate-900/60 p-4">
-      <p class="text-xs text-slate-400">Most visible title</p>
+      <p class="text-xs text-slate-400" title="The #1-ranked title by Points score over the last 7 days">Most visible title</p>
       <p class="mt-2 truncate text-xl font-semibold text-slate-50">{{ stats.top_game.title|default:"—" }}</p>
     </div>
   </section>
 
   <!-- Public preview table -->
-  <section class="pb-20">
+  <section class="reveal pb-20">
     <div class="mb-3 flex items-baseline justify-between">
       <h2 class="text-lg font-semibold tracking-tight text-slate-100">Top 8 · Market Visibility Index preview</h2>
       <a href="{% url 'dashboard' %}" class="text-xs text-emerald-400 hover:text-emerald-300">Full index, filters and history →</a>
     </div>
     <div class="overflow-hidden rounded-xl border border-slate-800 bg-slate-900/40">
-      <div class="hidden grid-cols-[3rem_minmax(0,2.5fr)_minmax(0,1.2fr)_minmax(0,1fr)_minmax(0,1fr)] gap-4 border-b border-slate-800 bg-slate-900/70 px-4 py-3 text-xs text-slate-500 md:grid">
+      <div class="hidden grid-cols-[3rem_minmax(0,2.2fr)_minmax(0,1.1fr)_minmax(0,0.8fr)_minmax(0,1fr)_minmax(0,1fr)] gap-4 border-b border-slate-800 bg-slate-900/70 px-4 py-3 text-xs text-slate-500 md:grid">
         <span>Rank</span>
         <span>Game</span>
         <span>Provider</span>
-        <span>Days featured</span>
-        <span>Peak brands</span>
+        <span class="inline-flex items-center gap-1" title="Composite visibility score, 0-100: 45% operator coverage, 30% consistency, 25% placement quality.">
+          Points <span class="text-slate-600">ⓘ</span>
+        </span>
+        <span title="Distinct days in the period this title appeared on at least one homepage">Days featured</span>
+        <span title="Highest number of operators featuring this title on a single day">Peak brands</span>
       </div>
       {% for row in preview_rows %}
-        <div class="grid grid-cols-1 gap-y-1 gap-x-4 border-t border-slate-800/70 px-4 py-3 first:border-t-0 md:grid-cols-[3rem_minmax(0,2.5fr)_minmax(0,1.2fr)_minmax(0,1fr)_minmax(0,1fr)] md:items-center">
+        <div class="grid grid-cols-1 gap-y-1 gap-x-4 border-t border-slate-800/70 px-4 py-3 transition-colors first:border-t-0 hover:bg-slate-800/25 md:grid-cols-[3rem_minmax(0,2.2fr)_minmax(0,1.1fr)_minmax(0,0.8fr)_minmax(0,1fr)_minmax(0,1fr)] md:items-center">
           <span class="tabular-nums text-sm font-semibold text-slate-300">{{ row.rank }}</span>
           <span class="min-w-0 truncate text-sm font-medium text-slate-100">{{ row.title }}</span>
           <span class="text-xs text-slate-400">{{ row.provider }}</span>
+          <span class="inline-flex w-fit items-center gap-1.5 rounded-md px-2 py-0.5 text-xs font-semibold tabular-nums ring-1 ring-inset
+            {% if row.frequency_score >= 70 %}bg-emerald-400/10 text-emerald-300 ring-emerald-400/25
+            {% elif row.frequency_score >= 40 %}bg-amber-400/10 text-amber-300 ring-amber-400/25
+            {% else %}bg-slate-800 text-slate-400 ring-slate-700{% endif %}">
+            {{ row.frequency_score }}<span class="font-normal opacity-60">/100</span>
+          </span>
           <span class="tabular-nums text-sm text-emerald-300">{{ row.days_featured }} / {{ window.days }}</span>
           <span class="tabular-nums text-sm text-slate-300">{{ row.peak_brand_count }} / {{ row.brands_total }}</span>
         </div>
@@ -110,15 +117,80 @@
       {% endfor %}
     </div>
   </section>
+
+  <!-- How it works -->
+  <section class="reveal border-t border-slate-800 pb-20 pt-16">
+    <h2 class="text-lg font-semibold tracking-tight text-slate-100">How the index is built</h2>
+    <p class="mt-2 max-w-2xl text-sm text-slate-400">
+      No surveys, no self-reported data - every number comes from the same pages regulated operators
+      show their own players, read the same way every night.
+    </p>
+    <div class="mt-8 grid gap-6 sm:grid-cols-3">
+      <div class="rounded-xl border border-transparent p-4 transition hover:-translate-y-1 hover:border-slate-800 hover:bg-slate-900/40">
+        <span class="flex h-8 w-8 items-center justify-center rounded-full bg-emerald-500/15 text-sm font-semibold text-emerald-300 ring-1 ring-inset ring-emerald-500/30">1</span>
+        <h3 class="mt-4 text-sm font-semibold text-slate-100">Sniff the lobby</h3>
+        <p class="mt-2 text-sm leading-relaxed text-slate-400">
+          Each operator's homepage and live-casino section is crawled nightly, reading the same lobby data
+          their own site loads for a real player.
+        </p>
+      </div>
+      <div class="rounded-xl border border-transparent p-4 transition hover:-translate-y-1 hover:border-slate-800 hover:bg-slate-900/40">
+        <span class="flex h-8 w-8 items-center justify-center rounded-full bg-emerald-500/15 text-sm font-semibold text-emerald-300 ring-1 ring-inset ring-emerald-500/30">2</span>
+        <h3 class="mt-4 text-sm font-semibold text-slate-100">Score by placement</h3>
+        <p class="mt-2 text-sm leading-relaxed text-slate-400">
+          A hero banner slot counts for more than page 3 of a grid - every tile is weighted by section and
+          on-page position before anything is compared.
+        </p>
+      </div>
+      <div class="rounded-xl border border-transparent p-4 transition hover:-translate-y-1 hover:border-slate-800 hover:bg-slate-900/40">
+        <span class="flex h-8 w-8 items-center justify-center rounded-full bg-emerald-500/15 text-sm font-semibold text-emerald-300 ring-1 ring-inset ring-emerald-500/30">3</span>
+        <h3 class="mt-4 text-sm font-semibold text-slate-100">Rank the market</h3>
+        <p class="mt-2 text-sm leading-relaxed text-slate-400">
+          Scores roll up per title, per provider, and per regulated market, so you can see what's actually
+          being pushed to players this week.
+        </p>
+      </div>
+    </div>
+  </section>
 </main>
 
-<footer class="border-t border-slate-800 bg-slate-950">
-  <div class="mx-auto max-w-7xl px-4 py-10 sm:px-6">
-    <p class="text-xs leading-relaxed text-slate-500">
-      Gambling can be addictive. This site publishes market research on homepage merchandising and is not an
-      invitation to play. 18+ only.
-    </p>
-  </div>
-</footer>
+<script>
+  // Fade sections in as they enter the viewport - skipped entirely under
+  // prefers-reduced-motion (see the .reveal media query above), and each
+  // section only ever fires once.
+  document.querySelectorAll('.reveal').forEach((el) => {
+    const obs = new IntersectionObserver((entries) => {
+      entries.forEach((entry) => {
+        if (entry.isIntersecting) {
+          entry.target.classList.add('is-visible');
+          obs.unobserve(entry.target);
+        }
+      });
+    }, { threshold: 0.15 });
+    obs.observe(el);
+  });
+
+  // Count up the hero stat strip from 0 on load, straight to the server-
+  // rendered value - a static number reads as inert on a page about a live
+  // nightly scan.
+  document.querySelectorAll('[data-countup]').forEach((el) => {
+    const target = parseInt(el.dataset.countup, 10) || 0;
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      el.textContent = target;
+      return;
+    }
+    const duration = 900;
+    const start = performance.now();
+    function step(now) {
+      const progress = Math.min((now - start) / duration, 1);
+      const eased = 1 - Math.pow(1 - progress, 3);
+      el.textContent = Math.round(target * eased);
+      if (progress < 1) requestAnimationFrame(step);
+    }
+    requestAnimationFrame(step);
+  });
+</script>
+
+{% include "index/partials/site_footer.html" %}
 </body>
 </html>

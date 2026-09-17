@@ -1,0 +1,31 @@
+{% load static %}
+<header class="sticky top-0 z-20 border-b border-slate-800/80 bg-slate-950/90 backdrop-blur">
+  <div class="mx-auto flex max-w-7xl items-center justify-between gap-4 px-4 py-3 sm:px-6">
+    <a href="{% url 'landing' %}" class="flex items-center gap-2.5">
+      <span class="h-7 w-7 rounded-md bg-emerald-500/20 ring-1 ring-inset ring-emerald-400/50 shadow-[0_0_10px_rgba(52,211,153,0.35)] grid place-items-center">
+        <span class="h-2 w-2 animate-pulse rounded-full bg-emerald-300"></span>
+      </span>
+      <span class="text-sm font-semibold tracking-tight text-slate-100">TopDog</span>
+    </a>
+    <nav class="flex items-center gap-4 text-xs">
+      <a href="{% url 'dashboard' %}" class="text-slate-400 hover:text-slate-200">Dashboard</a>
+      <a href="{% url 'about' %}" class="text-slate-400 hover:text-slate-200">About</a>
+      <a href="{% url 'contact' %}" class="text-slate-400 hover:text-slate-200">Contact</a>
+      {% if request.user.is_authenticated %}
+        {% if request.user.is_staff %}
+          <a href="{% url 'panel-home' %}" class="text-slate-400 hover:text-slate-200">Admin panel</a>
+        {% endif %}
+        <form method="post" action="{% url 'logout' %}" class="inline">
+          {% csrf_token %}
+          <button type="submit" class="text-slate-400 hover:text-slate-200">Log out</button>
+        </form>
+      {% else %}
+        <a href="{% url 'login' %}" class="text-slate-400 hover:text-slate-200">Log in</a>
+        <a href="{% url 'register' %}"
+           class="rounded-md bg-emerald-500/15 px-3 py-1.5 font-medium text-emerald-300 ring-1 ring-inset ring-emerald-500/30 hover:bg-emerald-500/25">
+          Register
+        </a>
+      {% endif %}
+    </nav>
+  </div>
+</header>

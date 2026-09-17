@@ -304,7 +304,10 @@ class BrandDiscoveryLogAdmin(admin.ModelAdmin):
 
 @admin.register(ScrapeLog)
 class ScrapeLogAdmin(admin.ModelAdmin):
-    list_display = ["executed_at", "brand", "status", "extraction_mode", "games_found", "duration_ms", "short_error"]
+    list_display = [
+        "executed_at", "brand", "status", "extraction_mode", "games_found", "diff_summary", "duration_ms",
+        "short_error",
+    ]
     list_filter = ["status", "extraction_mode", "brand__region", "brand"]
     search_fields = ["brand__name", "error_message"]
     date_hierarchy = "executed_at"
@@ -312,6 +315,14 @@ class ScrapeLogAdmin(admin.ModelAdmin):
     @admin.display(description="Error")
     def short_error(self, obj):
         return (obj.error_message or "")[:80]
+
+    @admin.display(description="Δ vs. last snapshot")
+    def diff_summary(self, obj):
+        diff = obj.snapshot_diff or {}
+        added, removed, moved = len(diff.get("added", [])), len(diff.get("removed", [])), len(diff.get("moved", []))
+        if not (added or removed or moved):
+            return "—"
+        return f"+{added} / -{removed} / ~{moved}"
 
 
 @admin.register(HomepagePlacement)

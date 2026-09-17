@@ -12,8 +12,8 @@
 <header class="sticky top-0 z-20 border-b border-slate-800/80 bg-slate-950/90 backdrop-blur">
   <div class="mx-auto flex max-w-7xl items-center justify-between gap-4 px-4 py-3 sm:px-6">
     <a href="{% url 'landing' %}" class="flex items-center gap-2.5">
-      <span class="h-7 w-7 rounded-md bg-emerald-500/15 ring-1 ring-inset ring-emerald-500/30 grid place-items-center">
-        <span class="h-2 w-2 rounded-full bg-emerald-400"></span>
+      <span class="h-7 w-7 rounded-md bg-emerald-500/20 ring-1 ring-inset ring-emerald-400/50 shadow-[0_0_10px_rgba(52,211,153,0.35)] grid place-items-center">
+        <span class="h-2 w-2 animate-pulse rounded-full bg-emerald-300"></span>
       </span>
       <span class="text-sm font-semibold tracking-tight text-slate-100">TopDog · Admin panel</span>
     </a>
@@ -28,21 +28,27 @@
     <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
       <h2 class="text-sm font-semibold text-slate-100">Run pipeline</h2>
       <div class="flex items-center gap-2">
-        <label for="trigger-region" class="text-xs text-slate-500">Market</label>
-        <select id="trigger-region" name="region"
+        <label for="market-filter" class="text-xs text-slate-500">Market</label>
+        <select id="market-filter" name="region"
                 class="rounded-lg border border-slate-800 bg-slate-900 px-2.5 py-1.5 text-sm text-slate-200 focus:border-emerald-500/50 focus:outline-none">
-          <option value="">All markets</option>
+          <option value="" {% if not selected_region %}selected{% endif %}>All markets</option>
           {% for region in regions %}
-            <option value="{{ region.code }}">{{ region.name }} ({{ region.code }})</option>
+            <option value="{{ region.code }}" {% if region.code == selected_region %}selected{% endif %}>
+              {{ region.name }} ({{ region.code }})
+            </option>
           {% endfor %}
         </select>
       </div>
     </div>
+    <p class="mb-3 text-xs text-slate-500">
+      Choosing a market scopes brands, the review queue and the log feed below to it. Leave it on
+      "All markets" to see everything.
+    </p>
 
     <div class="grid gap-3 sm:grid-cols-3">
       <button
         hx-post="{% url 'panel-trigger' 'discovery' %}"
-        hx-include="#trigger-region"
+        hx-include="#market-filter"
         hx-target="#log-feed" hx-swap="innerHTML"
         hx-indicator="#trigger-busy"
         class="group rounded-xl border border-slate-700 bg-slate-900 px-4 py-3 text-left transition-colors hover:border-emerald-500/50">
@@ -51,7 +57,7 @@
       </button>
       <button
         hx-post="{% url 'panel-trigger' 'scrape' %}"
-        hx-include="#trigger-region"
+        hx-include="#market-filter"
         hx-target="#log-feed" hx-swap="innerHTML"
         hx-indicator="#trigger-busy"
         class="group rounded-xl border border-slate-700 bg-slate-900 px-4 py-3 text-left transition-colors hover:border-emerald-500/50">
@@ -60,7 +66,7 @@
       </button>
       <button
         hx-post="{% url 'panel-trigger' 'pipeline' %}"
-        hx-include="#trigger-region"
+        hx-include="#market-filter"
         hx-target="#log-feed" hx-swap="innerHTML"
         hx-indicator="#trigger-busy"
         class="group rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-4 py-3 text-left transition-colors hover:border-emerald-400">
@@ -84,6 +90,7 @@
       <h2 class="mb-3 text-sm font-semibold text-slate-100">Brands</h2>
       <form id="brand-form"
             hx-post="{% url 'panel-bulk-status' %}"
+            hx-include="#market-filter"
             hx-target="#brand-table" hx-swap="innerHTML">
         {% csrf_token %}
         <div class="mb-3 flex flex-wrap items-center gap-2">
@@ -95,8 +102,9 @@
             </button>
           {% endfor %}
         </div>
-        <div id="brand-table">
-          {% include "index/partials/panel_brands.html" %}
+        <div id="brand-table"
+             hx-get="{% url 'panel-brands' %}" hx-include="#market-filter"
+             hx-trigger="load, change from:#market-filter" hx-swap="innerHTML">
         </div>
       </form>
     </section>
@@ -104,18 +112,28 @@
     <!-- Unmatched tile review queue -->
     <section>
       <div class="mb-3 flex items-center justify-between">
-        <h2 class="text-sm font-semibold text-slate-100">Unmatched tile review</h2>
+        <h2 class="inline-flex items-center gap-1.5 text-sm font-semibold text-slate-100">
+          Unmatched tile review
+          <span class="cursor-help text-xs font-normal text-slate-500"
+                title="Lobby tiles the automatic matching couldn't confidently resolve on its own - either nothing like them exists in the catalog yet, or they're too similar to an existing title to auto-decide. You approve, link, or reject each one below.">ⓘ</span>
+        </h2>
         <span id="review-count" class="text-xs text-slate-500">{{ review_count }} pending</span>
       </div>
-      <div id="review-queue" hx-get="{% url 'panel-review-queue' %}" hx-trigger="load, every 15s" hx-swap="innerHTML">
+      <div id="review-queue" hx-get="{% url 'panel-review-queue' %}" hx-include="#market-filter"
+           hx-trigger="load, every 15s, change from:#market-filter" hx-swap="innerHTML">
       </div>
     </section>
   </div>
 
   <!-- Log viewer -->
   <section>
-    <h2 class="mb-3 text-sm font-semibold text-slate-100">Live log feed</h2>
-    <div id="log-feed" hx-get="{% url 'panel-logs' %}" hx-trigger="load, every 5s" hx-swap="innerHTML">
+    <h2 class="mb-3 inline-flex items-center gap-1.5 text-sm font-semibold text-slate-100">
+      Live log feed
+      <span class="cursor-help text-xs font-normal text-slate-500"
+            title="Extraction modes: network_api = games read straight from the site's own JSON (fastest, most reliable). dom_ai = Claude read the rendered page when no JSON was found. dom_css = CSS-selector fallback, used when AI extraction is off for a brand.">ⓘ</span>
+    </h2>
+    <div id="log-feed" hx-get="{% url 'panel-logs' %}" hx-include="#market-filter"
+         hx-trigger="load, every 5s, change from:#market-filter" hx-swap="innerHTML">
     </div>
   </section>
 
